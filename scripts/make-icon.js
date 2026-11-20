@@ -1,0 +1,106 @@
+// 生成 Shuttle 图标（方案 A：深海蓝 + 银梭 + 金线），用 Electron 渲染成 PNG
+// 用法：cd aidesk-desktop && npx electron scripts/make-icon.js <输出目录>，再把生成的 PNG 换到 build/icon.png、src/assets/、手机网页 aidesk-web/
+const { app, BrowserWindow } = require('electron');
+const fs = require('fs');
+const path = require('path');
+
+// 1024×1024 的图标主体（满版，不含圆角）
+const ART = `
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+    <stop offset="0" stop-color="#22386b"/><stop offset="0.55" stop-color="#14254d"/><stop offset="1" stop-color="#0a1430"/>
+  </linearGradient>
+  <radialGradient id="glow" cx="0.3" cy="0.22" r="0.75">
+    <stop offset="0" stop-color="#4a6fc0" stop-opacity="0.38"/><stop offset="1" stop-color="#4a6fc0" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#f4f6fa"/><stop offset="0.22" stop-color="#cfd6e0"/><stop offset="0.48" stop-color="#7c879a"/>
+    <stop offset="0.56" stop-color="#5d687b"/><stop offset="0.72" stop-color="#9aa4b4"/><stop offset="0.9" stop-color="#d9dee6"/><stop offset="1" stop-color="#aab3c1"/>
+  </linearGradient>
+  <linearGradient id="tip" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#4a74d0"/><stop offset="0.5" stop-color="#22449a"/><stop offset="1" stop-color="#162f6e"/>
+  </linearGradient>
+  <linearGradient id="slot" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#03070f"/><stop offset="1" stop-color="#182a55"/>
+  </linearGradient>
+  <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#f6dc98"/><stop offset="0.5" stop-color="#d1a352"/><stop offset="1" stop-color="#8f6427"/>
+  </linearGradient>
+  <linearGradient id="thread" x1="0" y1="1" x2="1" y2="0">
+    <stop offset="0" stop-color="#9c7432" stop-opacity="0.2"/><stop offset="0.35" stop-color="#d9b066"/><stop offset="1" stop-color="#f3d68e"/>
+  </linearGradient>
+  <clipPath id="body"><path d="M120 512 C 250 372, 774 372, 904 512 C 774 652, 250 652, 120 512 Z"/></clipPath>
+  <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="24"/></filter>
+</defs>
+<rect width="1024" height="1024" fill="url(#bg)"/>
+<rect width="1024" height="1024" fill="url(#glow)"/>
+<!-- 金线：后半段（在梭子下面） -->
+<path d="M110 900 C 120 720, 300 640, 470 600" fill="none" stroke="url(#thread)" stroke-width="16" stroke-linecap="round"/>
+<path d="M150 930 C 170 760, 330 680, 490 640" fill="none" stroke="#d9b066" stroke-opacity="0.35" stroke-width="6" stroke-linecap="round"/>
+<g transform="rotate(-28 512 512)">
+  <!-- 投影 -->
+  <ellipse cx="520" cy="600" rx="380" ry="70" fill="#000" opacity="0.55" filter="url(#soft)"/>
+  <!-- 梭身 -->
+  <path d="M120 512 C 250 372, 774 372, 904 512 C 774 652, 250 652, 120 512 Z" fill="url(#metal)"/>
+  <g clip-path="url(#body)">
+    <rect x="100" y="360" width="176" height="304" fill="url(#tip)"/>
+    <rect x="748" y="360" width="176" height="304" fill="url(#tip)"/>
+    <rect x="272" y="360" width="10" height="304" fill="#c9d0da"/>
+    <rect x="742" y="360" width="10" height="304" fill="#c9d0da"/>
+    <path d="M150 492 C 290 392, 734 392, 874 492" fill="none" stroke="#ffffff" stroke-opacity="0.75" stroke-width="6"/>
+  </g>
+  <path d="M120 512 C 250 372, 774 372, 904 512 C 774 652, 250 652, 120 512 Z" fill="none" stroke="#0a1430" stroke-opacity="0.35" stroke-width="4"/>
+  <!-- 梭槽 + 纡子 -->
+  <path d="M336 512 C 410 446, 614 446, 688 512 C 614 578, 410 578, 336 512 Z" fill="url(#slot)"/>
+  <path d="M336 512 C 410 578, 614 578, 688 512" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="4"/>
+  <rect x="420" y="484" width="184" height="56" rx="28" fill="url(#gold)"/>
+  <g stroke="#7a5420" stroke-opacity="0.35" stroke-width="3">
+    <line x1="452" y1="487" x2="452" y2="537"/><line x1="476" y1="487" x2="476" y2="537"/><line x1="500" y1="487" x2="500" y2="537"/>
+    <line x1="524" y1="487" x2="524" y2="537"/><line x1="548" y1="487" x2="548" y2="537"/><line x1="572" y1="487" x2="572" y2="537"/>
+  </g>
+  <rect x="436" y="490" width="152" height="9" rx="4.5" fill="#fff3cf" opacity="0.55"/>
+  <rect x="404" y="474" width="22" height="76" rx="8" fill="url(#metal)"/>
+  <rect x="598" y="474" width="22" height="76" rx="8" fill="url(#metal)"/>
+</g>
+<!-- 金线：前半段（从梭槽里引出） -->
+<path d="M598 466 C 636 418, 676 340, 740 262 S 860 132, 916 112" fill="none" stroke="url(#thread)" stroke-width="16" stroke-linecap="round"/>
+<path d="M618 486 C 664 436, 712 360, 776 284 S 892 156, 944 140" fill="none" stroke="#e8c67c" stroke-opacity="0.4" stroke-width="6" stroke-linecap="round"/>
+`;
+
+// mode: mac = 留边 + 阴影（macOS 图标规范，824 的圆角方块）；round = 满版圆角；square = 满版直角（iPhone 主屏幕自己会切圆角）
+function svg(mode) {
+  const inner = `<svg x="0" y="0" width="1024" height="1024" viewBox="0 0 1024 1024">${ART}</svg>`;
+  if (mode === 'square') return `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">${inner}</svg>`;
+  const s = mode === 'mac' ? 824 : 1024;
+  const o = (1024 - s) / 2;
+  const r = s * 0.225;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <clipPath id="sq"><rect x="${o}" y="${o}" width="${s}" height="${s}" rx="${r}"/></clipPath>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000" flood-opacity="0.32"/></filter>
+  </defs>
+  ${mode === 'mac' ? `<rect x="${o}" y="${o}" width="${s}" height="${s}" rx="${r}" fill="#0a1430" filter="url(#drop)"/>` : ''}
+  <g clip-path="url(#sq)"><g transform="translate(${o} ${o}) scale(${s / 1024})">${inner}</g></g>
+  <rect x="${o + 2}" y="${o + 2}" width="${s - 4}" height="${s - 4}" rx="${r - 2}" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="3"/>
+</svg>`;
+}
+
+const out = process.argv[2];
+app.disableHardwareAcceleration();
+app.whenReady().then(async () => {
+  fs.mkdirSync(out, { recursive: true });
+  const win = new BrowserWindow({ width: 1024, height: 1024, show: false, transparent: true, frame: false, useContentSize: true, webPreferences: { offscreen: true } });
+  for (const mode of ['mac', 'round', 'square']) {
+    const s = svg(mode);
+    fs.writeFileSync(path.join(out, `icon-${mode}.svg`), s);
+    const html = `<html><body style="margin:0;background:transparent">${s}</body></html>`;
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await new Promise((r) => setTimeout(r, 400));
+    const img = await win.webContents.capturePage({ x: 0, y: 0, width: 1024, height: 1024 });
+    const full = img.getSize().width === 1024 ? img : img.resize({ width: 1024, height: 1024, quality: 'best' });
+    fs.writeFileSync(path.join(out, `icon-${mode}-1024.png`), full.toPNG());
+    for (const n of [512, 256, 192, 180, 128, 64, 32, 16]) fs.writeFileSync(path.join(out, `icon-${mode}-${n}.png`), full.resize({ width: n, height: n, quality: 'best' }).toPNG());
+  }
+  console.log('done');
+  app.quit();
+});

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+  <title>Shuttle</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="quick.css" />
+</head>
+<body class="quick-body">
+  <div class="qa" id="qa">
+    <div class="qa-quote hidden" id="qaQuote">
+      <span class="qa-tag" data-i18n="quickQuote"></span>
+      <div class="qa-quote-text" id="qaQuoteText"></div>
+      <button class="qa-x" id="qaQuoteX" type="button" data-i18n-title="quickRemoveQuote">×</button>
+    </div>
+    <form class="qa-form" id="qaForm">
+      <span class="qa-logo">✦</span>
+      <input id="qaInput" autocomplete="off" spellcheck="false" />
+      <span class="qa-kbd" id="qaKbd">Esc</span>
+    </form>
+    <div class="qa-answer hidden msg assistant" id="qaAnswer"></div>
+    <div class="qa-foot hidden" id="qaFoot">
+      <span class="qa-model" id="qaModel"></span>
+      <div class="spacer"></div>
+      <button class="ghost small" id="qaCopy" type="button" data-i18n="copy"></button>
+      <button class="primary small" id="qaMain" type="button" data-i18n="quickContinue"></button>
+    </div>
+  </div>
+  <script src="../i18n.js"></script>
+  <script src="markdown.js"></script>
+  <script src="quick.js"></script>
+</body>
+</html>
