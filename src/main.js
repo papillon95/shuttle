@@ -88,6 +88,7 @@ function loadSettings() {
     effort: 'standard', // 思考档位：fast 快速 / standard 标准（模型默认）/ deep 深入
     expertAuto: true, // 允许 Shuttle 自己请外援（调用前仍要用户确认）
     expertDefault: '', // 默认外援：claude / codex；空 = 装了哪个用哪个
+    chatExpert: '', // 顶部模型列表里选了「本机 AI 工具」：消息直接交给这个外援回答（只存本机，不同步）
     expertAllowEdits: false, // 允许外援修改工作文件夹里的文件（默认只读；只对支持的工具生效）
     experts: {}, // 内置外援的设置 { [id]: { enabled, path } }
     expertsCustom: [], // 用户添加的其他 AI 命令行工具
@@ -894,6 +895,8 @@ const IMAGE_TOOL = {
 // settings.expertsCustom：用户添加的其他工具 [{ id, name, path, args, output, jsonField, readOnly }]
 let expertsAll = []; // 检测结果（含没找到的）
 let expertsAvail = []; // 找到且开着的
+// 外援能不能用（登录了没有）：在模型列表里选中它时检查一次，结果记到这次启动结束（换路径、重新检测时清掉）
+const expertHealth = new Map(); // id -> { ok, error, notLoggedIn, login }
 const expertCfg = (s = loadSettings()) => ({
   paths: Object.fromEntries(Object.entries(s.experts || {}).filter(([, v]) => v?.path).map(([k, v]) => [k, v.path])),
   custom: s.expertsCustom || [],
@@ -994,20 +997,37 @@ async function runExpert(c, ex, question, signal) {
       },
     });
     if (r.ok) return r;
-    return { ok: false, error: expertErrorText(ex, r), aborted: r.error === 'aborted' };
+    return { ok: false, error: expertErrorText(ex, r), aborted: r.error === 'aborted', notLoggedIn: !!r.notLoggedIn };
   } finally {
     clearInterval(timer);
   }
 }
 const expertConfirmTitle = (ex) => T(expertCanEdit(ex) ? 'confirmExpertEdit' : ex.readOnly === true ? 'confirmExpert' : 'confirmExpertUnknown', { name: ex.name });
+/** 这个外援要不要先确认：会改文件、或没法确认只读的才要；对话里勾过「不再问」的不用 */
+const expertNeedsConfirm = (c, ex) => (expertCanEdit(ex) || ex.readOnly !== true) && !c?.expertTrusted?.includes(ex.id);
+function trustExpert(c, ex) {
+  c.expertTrusted = [...new Set([...(c.expertTrusted || []), ex.id])];
+}
+/** 电脑上的确认框（带「这个对话里不再问」）：返回 false 取消 / true 继续 / 'trust' 继续且这个对话不再问 */
+async function expertGateDesktop(c, ex) {
+  if (!expertNeedsConfirm(c, ex)) return true;
+  const r = await dialog.showMessageBox(win, {
+    type: 'warning', buttons: [T('cancel'), T('continue')], defaultId: 1, cancelId: 0,
+    message: expertConfirmTitle(ex), detail: (c ? c.workspace : loadSettings().workspace) || '', checkboxLabel: T('expertTrustConv'),
+  });
+  if (r.response !== 1) return false;
+  return r.checkboxChecked ? 'trust' : true;
+}
 /** 模型调用的 ask_expert 工具 */
 async function expertTool(args, signal) {
   if (!expertsAvail.length) await refreshExperts();
   const ex = pickExpert(args.expert);
   if (!ex) return T('expertNone');
   const c = runCtx.getStore()?.conv || conv;
-  const ok = await askConfirm({ tool: 'ask_expert', title: expertConfirmTitle(ex), command: String(args.question || '').slice(0, 2000) });
-  if (!ok) return T('rejectedExpert');
+  if (!c?.expertTrusted?.includes(ex.id)) {
+    const ok = await askConfirm({ tool: 'ask_expert', title: expertConfirmTitle(ex), command: String(args.question || '').slice(0, 2000) });
+    if (!ok) return T('rejectedExpert');
+  }
   const r = await runExpert(c, ex, String(args.question || ''), signal);
   if (r.aborted) throw new DOMException('aborted', 'AbortError');
   return r.ok ? T('expertAnswer', { name: ex.name + (r.model ? `（${r.model}）` : '') }) + '\n\n' + r.text.slice(0, 30000) : T('errorPrefix') + r.error;
@@ -1019,11 +1039,13 @@ function expertsView() {
   return { all: expertsAll.map((x) => ({ ...x, enabled: s.experts?.[x.id]?.enabled !== false })), avail: expertsAvail };
 }
 ipcMain.handle('experts:list', async (_e, force) => {
+  if (force) expertHealth.clear(); // 点了「重新检测」：能不能用也重新查
   await refreshExperts(!!force);
   return { list: expertsAvail, ...expertsView() };
 });
 /** 内置工具：开关、手动指定路径（path 为空 = 恢复自动检测） */
 ipcMain.handle('experts:set', async (_e, id, patch) => {
+  expertHealth.delete(id); // 换了路径 / 开关：之前查过的能不能用不算数了
   const s = loadSettings();
   const cur = { ...(s.experts?.[id] || {}) };
   if ('enabled' in patch) cur.enabled = !!patch.enabled;
@@ -1127,6 +1149,18 @@ ipcMain.handle('experts:test', async (_e, target) => {
   const ex = expertsAll.find((x) => x.id === target?.id) || { name, login: '' };
   return { error: expertErrorText({ ...ex, name }, r), ms };
 });
+ipcMain.handle('experts:check', async (_e, id, force) => {
+  if (!force && expertHealth.has(id)) return expertHealth.get(id);
+  await refreshExperts();
+  const ex = expertsAvail.find((x) => x.id === id);
+  if (!ex) return { ok: false, error: T('chatExpertGone', { name: expertName(id) }) };
+  const r = await experts.run({ recipe: recipeOf(ex), bin: ex.path, prompt: T('expertTestPrompt'), cwd: require('os').tmpdir(), allowEdits: false, timeout: 120000 });
+  const h = r.ok ? { ok: true } : { ok: false, error: expertErrorText(ex, r), notLoggedIn: !!r.notLoggedIn, login: ex.login || '' };
+  // 超时、网络之类的偶发问题不记下来，下次再查
+  if (r.ok || r.notLoggedIn) expertHealth.set(id, h);
+  return h;
+});
+ipcMain.handle('experts:health', () => Object.fromEntries(expertHealth));
 ipcMain.handle('experts:saveCustom', async (_e, d, id) => {
   const c = customFromDraft(d || {});
   if (!c.path) return { error: T('expertPathNotFound') };
@@ -1157,13 +1191,14 @@ async function askExpertIn(c, expertId, { remote = false } = {}) {
   const ex = pickExpert(expertId);
   if (!ex) return { error: T('expertNone') };
   // 会改文件、或没法确认只读的工具：先确认一次（手机发起的弹到手机上）
-  if (expertCanEdit(ex) || ex.readOnly !== true) {
+  if (expertNeedsConfirm(c, ex)) {
     if (remote) {
       const ok = await runCtx.run({ conv: c }, () => askConfirm({ tool: 'ask_expert', title: expertConfirmTitle(ex), command: c.workspace || '' }));
       if (!ok) return { cancelled: true };
     } else {
-      const r = await dialog.showMessageBox(win, { type: 'warning', buttons: [T('cancel'), T('continue')], defaultId: 1, cancelId: 0, message: expertConfirmTitle(ex), detail: c.workspace });
-      if (r.response !== 1) return { cancelled: true };
+      const g = await expertGateDesktop(c, ex);
+      if (!g) return { cancelled: true };
+      if (g === 'trust') trustExpert(c, ex);
     }
   }
   const lastUser = [...c.messages].reverse().find((m) => m.role === 'user' && !m.expertAsk);
@@ -2192,7 +2227,26 @@ async function runAgent(input, opts = {}) {
       fs.mkdirSync(settings.workspace, { recursive: true });
     } catch {}
   }
-  if (images.length && !currentModelSeesImages(settings)) {
+  // 顶部选了「本机 AI 工具」（只对电脑界面上发的消息生效；定时任务、手机发的照旧用 Shuttle 的模型）
+  let directExpert = null;
+  let directGate = true;
+  if (!opts.conv && settings.chatExpert) {
+    if (!expertsAvail.length) await refreshExperts();
+    directExpert = expertsAvail.find((x) => x.id === settings.chatExpert) || null;
+    const fail = !directExpert ? T('chatExpertGone', { name: expertName(settings.chatExpert) }) : images.length ? T('chatExpertNoImages', { name: directExpert.name }) : '';
+    if (fail) {
+      send({ type: 'error', text: fail });
+      send({ type: 'done' });
+      return;
+    }
+    const cur = conv && (conv.workspace || '') === (settings.workspace || '') ? conv : null;
+    directGate = await expertGateDesktop(cur, directExpert);
+    if (!directGate) {
+      send({ type: 'done', stopped: true });
+      return { cancelled: true };
+    }
+  }
+  if (!directExpert && images.length && !currentModelSeesImages(settings)) {
     send({ type: 'platform-error', code: 'model_no_vision', text: T('err_model_no_vision') });
     send({ type: 'done' });
     return;
@@ -2219,12 +2273,38 @@ async function runAgent(input, opts = {}) {
     content: images.length ? [...(modelText ? [{ type: 'text', text: modelText }] : []), ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] : modelText,
     ...(files.length ? { userText, attachments: files.map(({ name, path: p, size }) => ({ name, path: p, size })) } : {}),
   });
+  if (directGate === 'trust') trustExpert(c, directExpert);
   saveConv(c);
   const abort = new AbortController();
   const { signal } = abort;
   runs.set(c.id, { conv: c, abort, partial: '', startedAt: Date.now() });
   send({ type: 'convs-changed', currentId: conv?.id || null, runId: c.id });
+  if (directExpert) return runCtx.run({ conv: c }, () => runDirectExpert(c, directExpert, modelText, signal));
   return runCtx.run({ conv: c }, () => runLoop(settings, c, msgs, userText, signal));
+}
+/** 直接问外援：不经过 Shuttle 的模型，问题和之前的对话一起交给本机的 AI 工具，回答记在对话里 */
+async function runDirectExpert(c, ex, question, signal) {
+  let failed = false;
+  try {
+    send({ type: 'expert-start', name: ex.name, id: ex.id, direct: true });
+    // 对话记录里不含刚发的这条（它单独作为「需要你回答的问题」）
+    const r = await runExpert({ ...c, messages: c.messages.slice(0, -1) }, ex, question || '-', signal);
+    if (r.ok) {
+      c.messages.push({ role: 'assistant', content: r.text, expert: ex.id, ...(r.model ? { expertModel: r.model } : {}) });
+      send({ type: 'assistant-start', expert: ex.name + (r.model ? `（${r.model}）` : '') });
+      send({ type: 'assistant-delta', text: r.text });
+      send({ type: 'assistant-end' });
+    } else {
+      failed = !r.aborted;
+      if (!r.aborted) send({ type: 'error', text: r.error });
+      if (r.notLoggedIn) expertHealth.set(ex.id, { ok: false, error: r.error, notLoggedIn: true, login: ex.login || '' });
+      else if (!r.aborted) expertHealth.delete(ex.id);
+    }
+    saveConv(c);
+  } finally {
+    runs.delete(c.id);
+    send({ type: 'done', failed, stopped: signal.aborted });
+  }
 }
 /** signal 中止时 reject（AbortError），用来和可能卡住的操作赛跑 */
 function abortPromise(signal) {

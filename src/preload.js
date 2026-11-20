@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld('api', {
   expertsPick: () => ipcRenderer.invoke('experts:pick'),
   expertsAnalyze: (p) => ipcRenderer.invoke('experts:analyze', p),
   expertsTest: (target) => ipcRenderer.invoke('experts:test', target),
+  expertsCheck: (id, force) => ipcRenderer.invoke('experts:check', id, force),
+  expertsHealth: () => ipcRenderer.invoke('experts:health'),
   expertsSaveCustom: (draft, id) => ipcRenderer.invoke('experts:saveCustom', draft, id),
   expertsRemoveCustom: (id) => ipcRenderer.invoke('experts:removeCustom', id),
   remoteQr: () => ipcRenderer.invoke('remote:qr'),

@@ -266,7 +266,26 @@ async function loadExperts(force) {
     expertsAvail = [];
   }
   renderExpertBar();
+  // 模型列表里的「本机 AI 工具」一组跟着更新；选着外援的话，后台先查一下它能不能用
+  try {
+    expertHealth = (await window.api.expertsHealth()) || {};
+  } catch {}
+  renderModelSel();
+  if (settings?.chatExpert && expertsAvail.some((x) => x.id === settings.chatExpert)) checkChatExpert(settings.chatExpert, false);
   return expertsAvail;
+}
+let expertHealth = {}; // id -> { ok, error }：选中时检查过的结果
+const expertChecking = {}; // 正在检查的：同一个外援同时只查一次，提示也只弹一次
+async function checkChatExpert(id, announce) {
+  if (expertChecking[id]) return expertChecking[id];
+  expertChecking[id] = window.api.expertsCheck(id).catch(() => null);
+  const h = await expertChecking[id];
+  delete expertChecking[id];
+  if (!h) return;
+  expertHealth[id] = h;
+  renderModelSel();
+  if (!h.ok && settings.chatExpert === id) showToast(h.error, 'error');
+  else if (h.ok && announce) showToast(T('chatExpertReady', { name: expertName(id) }), 'info');
 }
 function hideExpertBar() {
   document.getElementById('expertBar')?.remove();
@@ -283,8 +302,11 @@ function renderExpertBar() {
   bar.id = 'expertBar';
   bar.className = 'expert-bar';
   // 一排小头像按钮：默认外援排第一，最多放 3 个，其他的收进「+N」
-  const def = expertsAvail.find((x) => x.id === settings.expertDefault);
-  const ordered = def ? [def, ...expertsAvail.filter((x) => x !== def)] : expertsAvail;
+  // 选着某个本机 AI 工具时，它自己就不用再列在「换个 AI 回答」里了
+  const pool = expertsAvail.filter((x) => x.id !== settings.chatExpert);
+  if (!pool.length) return;
+  const def = pool.find((x) => x.id === settings.expertDefault);
+  const ordered = def ? [def, ...pool.filter((x) => x !== def)] : pool;
   const shown = ordered.length > 3 ? ordered.slice(0, 2) : ordered;
   const rest = ordered.slice(shown.length);
   bar.innerHTML =
@@ -895,7 +917,20 @@ $('newBtn').onclick = async () => {
 
 // ---------- 顶栏：工作目录、模型 ----------
 // 一个下拉框两组：平台模型（扣会员额度）+ 我的 Key（填了 Key 的厂商，不扣额度），选哪个用哪个
+// 选着本机 AI 工具时：思考档位用不上，先藏起来；输入框提示写给谁发；「换个 AI 回答」里不列它自己
+function applyModelMode() {
+  const xp = !!settings?.chatExpert && expertsAvail.some((x) => x.id === settings.chatExpert);
+  $('effortSel').nextElementSibling?.classList.toggle('hidden', xp);
+  if (!suggestion) $('input').placeholder = inputPh();
+  if (document.getElementById('expertBar')) renderExpertBar();
+}
+// 输入框的提示：选着本机 AI 工具时写「给 Claude Code 发消息…」
+function inputPh() {
+  const id = settings?.chatExpert;
+  return id && expertsAvail.some((x) => x.id === id) ? T('inputPhExpert', { name: expertName(id) }) : T('inputPh');
+}
 function currentModelValue() {
+  if (settings.chatExpert && expertsAvail.some((x) => x.id === settings.chatExpert)) return 'X::' + settings.chatExpert;
   if (settings.useOwnKey) {
     const cur = settings.selectedModels[settings.provider] || settings.allModels[settings.provider]?.[0]?.id;
     return 'O::' + settings.provider + '::' + cur;
@@ -919,8 +954,22 @@ function renderModelSel() {
     }
     sel.appendChild(g);
   }
+  // 本机的 AI 工具（Claude Code、Codex…）：选中后消息直接交给它回答，用用户自己的账号，不扣额度
+  if (expertsAvail.length) {
+    const g = document.createElement('optgroup');
+    g.label = T('localAiGroup');
+    for (const x of expertsAvail) {
+      const o = document.createElement('option');
+      o.value = 'X::' + x.id;
+      const h = expertHealth[x.id];
+      o.textContent = x.name + (h && !h.ok ? ' · ' + T(h.notLoggedIn ? 'expertNeedsLogin' : 'expertUnavailable') : '');
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  }
   sel.value = currentModelValue();
   if (!sel.value && sel.options.length) sel.selectedIndex = 0;
+  applyModelMode();
   $('effortSel').value = settings.effort || 'standard';
 }
 function renderWorkspace() {
@@ -939,18 +988,28 @@ $('effortSel').onchange = async (e) => {
 enhanceSelect($('approvalSel'), { up: true, className: 'pick-perm' });
 for (const id of ['approvalSel2', 'fontFamily', 'language', 'sfType', 'fbType', 'expertDefault', 'remoteBrowseScope']) enhanceSelect($(id), { className: 'pick-field' });
 $('modelSel').onchange = async (e) => {
+  if (e.target.value.startsWith('X::')) {
+    const id = e.target.value.slice(3);
+    settings = await window.api.saveSettings({ chatExpert: id });
+    applyModelMode();
+    showToast(T('chatExpertPicked', { name: expertName(id) }), 'info');
+    checkChatExpert(id, false);
+    return;
+  }
   if (e.target.value.startsWith('P::')) {
     const m = settings.platformModels.find((x) => x.value === e.target.value.slice(3));
     if (m && m.minPlanLevel > userLevel()) {
       sel_revert();
       return openPlans('plan_required', m.minPlanLevel);
     }
-    settings = await window.api.saveSettings({ platformModel: e.target.value.slice(3), useOwnKey: false });
+    settings = await window.api.saveSettings({ platformModel: e.target.value.slice(3), useOwnKey: false, chatExpert: '' });
+    applyModelMode();
     renderQuota();
     return;
   }
   const [, provider, model] = e.target.value.split('::');
-  settings = await window.api.saveSettings({ useOwnKey: true, provider, models: { [provider]: model } });
+  settings = await window.api.saveSettings({ useOwnKey: true, provider, models: { [provider]: model }, chatExpert: '' });
+  applyModelMode();
   renderQuota();
 };
 // 切到「全部自动执行」先确认风险；取消就退回原来的选项
@@ -991,7 +1050,7 @@ let suggestion = '';
 function setSuggestion(text) {
   suggestion = text || '';
   const inp = $('input');
-  inp.placeholder = suggestion || T('inputPh');
+  inp.placeholder = suggestion || inputPh();
   inp.classList.toggle('has-suggest', !!suggestion);
   $('suggestHint').classList.toggle('hidden', !suggestion || !!inp.value);
 }
@@ -1437,7 +1496,7 @@ window.api.onEvent((evt) => {
       break;
     case 'expert-start':
       hideExpertBar();
-      addMsg('expert-ask', esc(T('expertAskMsg', { name: evt.name })));
+      if (!evt.direct) addMsg('expert-ask', esc(T('expertAskMsg', { name: evt.name })));
       setRunning(true);
       showThinking(T('expertWorking', { name: evt.name }));
       break;
