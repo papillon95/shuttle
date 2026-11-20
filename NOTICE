@@ -4,3 +4,4 @@ Copyright 2026 richbrian.site
 本产品包含以下第三方组件（各自的许可证见对应目录）：
 - PDF.js（src/vendor/pdfjs），Apache License 2.0，Copyright Mozilla Foundation
 - qrcode-generator（src/vendor/qrcode-generator），MIT License，Copyright Kazuhiko Arase
+- Noto Sans SC（思源黑体，Windows / Linux 上的界面字体，首次启动时从官方 COS 下载，不随安装包分发），SIL Open Font License 1.1，Copyright Google LLC / Adobe

@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('api', {
   expertsRemoveCustom: (id) => ipcRenderer.invoke('experts:removeCustom', id),
   remoteQr: () => ipcRenderer.invoke('remote:qr'),
   makeQr: (text) => ipcRenderer.invoke('qr:make', text),
+  uiFont: () => ipcRenderer.invoke('font:ui'),
   remoteUntrust: (sid) => ipcRenderer.invoke('remote:untrust', sid),
   convSyncNow: () => ipcRenderer.invoke('convsync:now'),
   mcpGet: () => ipcRenderer.invoke('mcp:get'),

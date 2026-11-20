@@ -3923,8 +3923,49 @@ app.whenReady().then(() => {
   win.webContents.once('did-finish-load', () => {
     updater.markBootOk(); // 补丁能正常打开窗口，清零启动失败计数
     scheduleUpdateChecks();
+    setTimeout(() => ensureUiFont().catch((e) => console.warn('[font]', e.message)), 3000);
   });
 });
+
+// ---------- Windows / Linux 的界面字体：思源黑体（Noto Sans SC，开源 OFL 许可） ----------
+// 系统自带的微软雅黑在高分屏上偏粗糊，换成思源黑体更清爽。字体 7.8MB，不放进补丁（免得每次更新都变大），
+// 第一次启动时从 COS 后台下载一次到用户目录，校验通过后通知界面换上；下载失败就继续用系统字体，下次启动再试。
+const UI_FONT = {
+  url: 'https://mamahug-1256157831.cos.ap-guangzhou.myqcloud.com/shuttle/fonts/NotoSansSC-VF.woff2',
+  sha256: 'b5a0c63d8ea2ad277712f1c88209604b5acf007c8e2d0bffa313e3f1ad8642f1',
+  file: () => path.join(app.getPath('userData'), 'fonts', 'NotoSansSC-VF.woff2'),
+};
+let uiFontOk = null; // 校验过的字体文件地址（file://）
+function uiFontUrl() {
+  if (process.platform === 'darwin') return null; // Mac 自带的苹方已经很好看
+  if (uiFontOk) return uiFontOk;
+  try {
+    const buf = fs.readFileSync(UI_FONT.file());
+    if (require('crypto').createHash('sha256').update(buf).digest('hex') === UI_FONT.sha256) uiFontOk = require('url').pathToFileURL(UI_FONT.file()).href;
+  } catch {}
+  return uiFontOk;
+}
+let uiFontDownloading = false;
+async function ensureUiFont() {
+  if (process.platform === 'darwin' || uiFontUrl() || uiFontDownloading) return;
+  uiFontDownloading = true;
+  try {
+    const r = await fetch(UI_FONT.url, { signal: AbortSignal.timeout(10 * 60 * 1000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (require('crypto').createHash('sha256').update(buf).digest('hex') !== UI_FONT.sha256) throw new Error('sha256 mismatch');
+    fs.mkdirSync(path.dirname(UI_FONT.file()), { recursive: true });
+    const tmp = UI_FONT.file() + '.tmp';
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, UI_FONT.file());
+    uiFontOk = null;
+    const url = uiFontUrl();
+    if (url) send({ type: 'ui-font', url });
+  } finally {
+    uiFontDownloading = false;
+  }
+}
+ipcMain.handle('font:ui', () => uiFontUrl());
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => {
   flushConvs(); // 还没写盘的对话先写掉

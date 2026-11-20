@@ -1480,6 +1480,9 @@ window.api.onEvent((evt) => {
       append(n);
       break;
     }
+    case 'ui-font':
+      useUiFont(evt.url);
+      break;
     case 'catalog-changed':
       // 后台改了模型：重新拿模型列表，下拉框跟着更新
       window.api.getSettings().then((s) => {
@@ -2049,6 +2052,17 @@ $('bgReset').onclick = async () => {
   applyBackground();
   settings = await window.api.saveSettings({ ...BG_DEFAULTS });
 };
+
+// ---------- Windows / Linux 默认界面字体：下载好的思源黑体（英文数字仍用 Segoe UI） ----------
+function useUiFont(url) {
+  if (!url || document.getElementById('uiFontFace')) return;
+  const st = document.createElement('style');
+  st.id = 'uiFontFace';
+  st.textContent = `@font-face { font-family: "Shuttle Sans"; src: url("${url}") format("woff2"); font-weight: 100 900; font-display: swap; }
+:root.os-win, :root.os-linux { --font: "Segoe UI Variable Text", "Segoe UI", "Shuttle Sans", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }`;
+  document.head.appendChild(st);
+}
+if (!document.documentElement.classList.contains('os-mac')) window.api.uiFont().then(useUiFont).catch(() => {});
 
 // ---------- 字体 ----------
 // 常用字体按系统里有没有装来显示；另外列出本机已安装的全部字体（Local Font Access）
