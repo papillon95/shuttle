@@ -91,7 +91,7 @@ const definitions = [
     function: {
       name: 'edit_file',
       description:
-        '修改已有文件：把 old_string 精确替换为 new_string。old_string 必须在文件中唯一出现（包含足够上下文），且与原文完全一致（包括缩进）。修改前务必先 read_file。',
+        '修改已有文件：把 old_string 替换为 new_string。old_string 要在文件中唯一出现（带够上下文），照 read_file 看到的原文抄写（不要带行号）。修改前务必先 read_file。',
       parameters: {
         type: 'object',
         properties: {
@@ -420,19 +420,122 @@ async function findFiles(root, pattern, sub, ignore = DEFAULT_IGNORE) {
   return T('findSummary', { n: found.length }) + (found.length > FIND_MAX ? T('findTruncated', { n: FIND_MAX }) : '') + '\n' + found.slice(0, FIND_MAX).join('\n');
 }
 
-// 生成一个简单的 diff 预览，供用户确认
+// ---------- 改文件：先精确匹配，匹配不上再宽松匹配，还不行就把最接近的原文给模型 ----------
+// 模型常因为一个空格、缩进、Windows 换行（\r\n）或误带了 read_file 的行号而匹配失败，然后反复重试。
+const LINE_NO_RE = /^\s*\d+ {2}/; // read_file 输出的行号前缀「   12  」
+const squash = (l) => l.trim().replace(/\s+/g, ' ');
+const indentOf = (l) => /^[ \t]*/.exec(l)[0];
+function countOf(text, s) {
+  let n = 0;
+  for (let i = text.indexOf(s); i >= 0; i = text.indexOf(s, i + s.length)) n++;
+  return n;
+}
+function lineNosOf(text, s, max = 5) {
+  const out = [];
+  for (let i = text.indexOf(s); i >= 0 && out.length < max; i = text.indexOf(s, i + s.length)) out.push(text.slice(0, i).split('\n').length);
+  return out;
+}
+// 两行有多像（0～1）：去掉空白后按相邻两个字符的重合度算
+function similar(a, b) {
+  a = a.replace(/\s+/g, '');
+  b = b.replace(/\s+/g, '');
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const m = new Map();
+  for (let i = 0; i < a.length - 1; i++) m.set(a.slice(i, i + 2), (m.get(a.slice(i, i + 2)) || 0) + 1);
+  let hit = 0;
+  for (let i = 0; i < b.length - 1; i++) {
+    const k = b.slice(i, i + 2);
+    const n = m.get(k);
+    if (n) (hit++, m.set(k, n - 1));
+  }
+  return (2 * hit) / (a.length + b.length - 2);
+}
+// 找文件里和 oldLines 最像的一段，返回带行号的原文；不够像就返回空
+function closestSnippet(lines, oldLines) {
+  const olds = oldLines.slice(0, 30);
+  const n = olds.length;
+  if (!n || lines.length > 30000) return '';
+  let best = 0;
+  let at = -1;
+  for (let i = 0; i + n <= lines.length || (i === 0 && lines.length); i++) {
+    let sc = 0;
+    for (let k = 0; k < n && i + k < lines.length; k++) sc += similar(lines[i + k], olds[k]);
+    if (sc > best) (best = sc), (at = i);
+    if (i + n > lines.length) break;
+  }
+  if (at < 0 || best / n < 0.5) return '';
+  const s = Math.max(0, at - 2);
+  const e = Math.min(lines.length, at + oldLines.length + 2, s + 60);
+  return lines.slice(s, e).map((l, i) => `${String(s + i + 1).padStart(5)}  ${l}`).join('\n');
+}
+/** 算出改完后的全文。返回 { newText, startLine, oldShown, newShown, how }；找不到 / 不唯一时抛错（错误里带最接近的原文或出现的行号） */
+function applyEdit(text, oldStr, newStr) {
+  if (!oldStr) throw new Error(T('editEmptyOld'));
+  // Windows 换行：文件全是 \r\n 时，统一按 \n 匹配，写回时再换回去
+  const crlf = text.includes('\r\n') && !/(^|[^\r])\n/.test(text);
+  const t = crlf ? text.replace(/\r\n/g, '\n') : text;
+  let o = oldStr.replace(/\r\n/g, '\n');
+  let nw = newStr.replace(/\r\n/g, '\n');
+  const done = (newText, startLine, oldShown, newShown, how) => ({ newText: crlf ? newText.replace(/\n/g, '\r\n') : newText, startLine, oldShown, newShown, how });
+  const exact = (o2, n2, how) => {
+    const c = countOf(t, o2);
+    if (c > 1) throw new Error(T('notUnique', { n: c }) + T('editAtLines', { lines: lineNosOf(t, o2).join('、') }));
+    if (c === 1) {
+      const i = t.indexOf(o2);
+      return done(t.slice(0, i) + n2 + t.slice(i + o2.length), t.slice(0, i).split('\n').length, o2, n2, how);
+    }
+    return null;
+  };
+  let r = exact(o, nw, '');
+  if (r) return r;
+  // 误带了 read_file 的行号：每一行都有就去掉再试
+  const oLines0 = o.split('\n');
+  if (oLines0.filter((l) => l.trim()).every((l) => LINE_NO_RE.test(l))) {
+    o = oLines0.map((l) => l.replace(LINE_NO_RE, '')).join('\n');
+    if (nw.split('\n').filter((l) => l.trim()).every((l) => LINE_NO_RE.test(l))) nw = nw.split('\n').map((l) => l.replace(LINE_NO_RE, '')).join('\n');
+    r = exact(o, nw, 'lineno');
+    if (r) return r;
+  }
+  // 按整行、忽略行首行尾和多余空白再匹配一次
+  const lines = t.split('\n');
+  const oLines = o.split('\n');
+  while (oLines.length > 1 && !oLines[0].trim()) oLines.shift();
+  while (oLines.length > 1 && !oLines[oLines.length - 1].trim()) oLines.pop();
+  const want = oLines.map(squash);
+  if (want.some(Boolean)) {
+    const hits = [];
+    for (let i = 0; i + want.length <= lines.length; i++) {
+      let ok = true;
+      for (let k = 0; k < want.length && ok; k++) ok = squash(lines[i + k]) === want[k];
+      if (ok) hits.push(i);
+    }
+    if (hits.length > 1) throw new Error(T('notUnique', { n: hits.length }) + T('editAtLines', { lines: hits.slice(0, 5).map((i) => i + 1).join('、') }));
+    if (hits.length === 1) {
+      const i = hits[0];
+      // 缩进按文件里的来：模型写的缩进和原文差多少，新内容就整体挪多少
+      const k0 = oLines.findIndex((l) => l.trim());
+      const from = indentOf(oLines[k0]);
+      const to = indentOf(lines[i + k0]);
+      const nLines = nw.split('\n').map((l) => (from === to || !l.trim() ? l : l.startsWith(from) ? to + l.slice(from.length) : l));
+      const out = [...lines.slice(0, i), ...nLines, ...lines.slice(i + oLines.length)];
+      return done(out.join('\n'), i + 1, lines.slice(i, i + oLines.length).join('\n'), nLines.join('\n'), 'loose');
+    }
+  }
+  const near = closestSnippet(lines, oLines);
+  throw new Error(near ? T('notFoundNear') + '\n' + near : T('notFound'));
+}
+
+// 生成一个简单的 diff 预览，供用户确认；newText 是改完后的全文
 function makeEditPreview(root, p, oldStr, newStr) {
   const abs = safePath(root, p);
   const text = fs.readFileSync(abs, 'utf8');
-  const count = text.split(oldStr).length - 1;
-  if (count === 0) throw new Error(T('notFound'));
-  if (count > 1) throw new Error(T('notUnique', { n: count }));
-  const startLine = text.slice(0, text.indexOf(oldStr)).split('\n').length;
+  const { newText, startLine, oldShown, newShown, how } = applyEdit(text, oldStr, newStr);
   const diff = [
-    ...oldStr.split('\n').map((l, i) => ({ type: 'del', no: startLine + i, text: l })),
-    ...newStr.split('\n').map((l, i) => ({ type: 'add', no: startLine + i, text: l })),
+    ...oldShown.split('\n').map((l, i) => ({ type: 'del', no: startLine + i, text: l })),
+    ...newShown.split('\n').map((l, i) => ({ type: 'add', no: startLine + i, text: l })),
   ];
-  return { abs, text, diff, startLine };
+  return { abs, text, newText, diff, startLine, how };
 }
 
 function backup(backupDir, abs) {
@@ -464,4 +567,4 @@ function runCommand(root, command, signal, timeoutSec = 60, extraPath = []) {
   });
 }
 
-module.exports = { setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, makeEditPreview, backup, runCommand };
+module.exports = { setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, applyEdit, makeEditPreview, backup, runCommand };

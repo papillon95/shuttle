@@ -473,7 +473,7 @@ ${identityLine()}
 Rules:
 0. If the user is just greeting, chatting or asking something unrelated to their files, answer directly without calling tools. Only look at files when the task needs it.
 1. If you are unsure where a file is, use find_files (by file name) or search (by content) first. Do not guess paths, and do not run grep, find, cat or ls through run_command instead of these tools.
-2. Always read_file before editing. Use edit_file for minimal changes; old_string must match the original exactly and be unique.
+2. Always read_file before editing. Use edit_file for minimal changes; old_string must be unique and copied from the read_file output (without line numbers).
 3. Writing files and running commands may need the user's approval. If the user rejects, stop and ask why instead of trying another way.
 4. Do not run destructive commands (such as rm -rf or git push --force) unless the user explicitly asks.
 5. When done, briefly say which files you changed and how.
@@ -497,7 +497,7 @@ ${identityLine()}
 工作原则：
 0. 用户只是打招呼、闲聊，或问和他的文件无关的问题时，直接回答，不要调用工具；只有任务需要时才去看文件。
 1. 不确定文件位置时，先用 find_files（按文件名）或 search（按内容）查找，不要猜测路径；不要用 run_command 执行 grep、find、cat、ls 代替这些工具。
-2. 修改文件前必须先 read_file 查看原文；用 edit_file 做最小化修改，old_string 要与原文完全一致并且唯一。
+2. 修改文件前必须先 read_file 查看原文；用 edit_file 做最小化修改，old_string 照 read_file 看到的原文抄写（不带行号）并且唯一。
 3. 写文件、执行命令可能需要用户确认，用户拒绝时请停下来询问原因，不要换个方式硬做。
 4. 不要执行破坏性命令（如 rm -rf、git push --force），除非用户明确要求。
 5. 完成后用简洁的中文说明你改了哪些文件、改了什么。
@@ -621,6 +621,13 @@ const CONTEXT_BUDGET_CHARS = 240000; // 还没测出这个对话「每个字符�
 // 发给模型时用「摘要 + 最近的内容」代替，用量就降回去了。本地保存的完整对话不动，往上翻还能看到。
 const CTX_CAP = Number(process.env.AGENT_CTX_CAP) || 128000; // 我们自己的上限（token）：目前所有模型都支持 12.8 万；再大每一步都很贵
 const CTX_COMPACT_AT = 0.8; // 到上限的 80% 自动整理
+// 但最多到 6.4 万 token 就整理：再往上每一步都更慢、更贵，模型也更容易忘掉前面的要求
+const CTX_COMPACT_TOKENS = Number(process.env.AGENT_COMPACT_TOKENS) || 64000;
+// 之前轮次里的大段工具结果（读的文件、命令输出）只留开头和结尾：本轮已经用过了，要再看可以重新读。
+// 只动「最后一条用户消息」之前的内容，同一轮里前面的内容不变，缓存照样命中
+const OLD_TOOL_CHARS = 6000;
+const OLD_TOOL_HEAD = 2000;
+const OLD_TOOL_TAIL = 800;
 const CTX_KEEP = 0.15; // 整理后保留的最近内容不超过上限的 15%（其余由摘要代替）
 const CTX_DEFAULT_RATIO = 0.4; // 还没测出时：每个字符约 0.4 token
 /** 消息列表的字符数（图片的 base64 按 3000 字符算） */
@@ -696,6 +703,27 @@ function compactMessages(messages, c) {
       out[i] = { ...out[i], content: out[i].content.map((c) => (c.type === 'image_url' ? { type: 'text', text: T('imageOmitted') } : c)) };
     }
   }
+  // 1.6 当前这一轮之前的大段工具结果、写文件的大段内容只留头尾
+  const clip = (str) => str.slice(0, OLD_TOOL_HEAD) + '\n' + T('oldToolClipped', { n: (str.length - OLD_TOOL_HEAD - OLD_TOOL_TAIL).toLocaleString() }) + '\n' + str.slice(-OLD_TOOL_TAIL);
+  for (let i = 0; i < lastUserIdx; i++) {
+    const m = out[i];
+    if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > OLD_TOOL_CHARS) out[i] = { ...m, content: clip(m.content) };
+    else if (m.role === 'assistant' && m.tool_calls?.some((tc) => (tc.function?.arguments || '').length > OLD_TOOL_CHARS)) {
+      out[i] = {
+        ...m,
+        tool_calls: m.tool_calls.map((tc) => {
+          if ((tc.function?.arguments || '').length <= OLD_TOOL_CHARS) return tc;
+          try {
+            const a = JSON.parse(tc.function.arguments);
+            for (const k of Object.keys(a)) if (typeof a[k] === 'string' && a[k].length > OLD_TOOL_CHARS) a[k] = clip(a[k]);
+            return { ...tc, function: { ...tc.function, arguments: JSON.stringify(a) } };
+          } catch {
+            return tc;
+          }
+        }),
+      };
+    }
+  }
   // 2. 当前这一轮之前的思考过程只保留开头
   let lastUser = -1;
   out.forEach((m, i) => { if (m.role === 'user') lastUser = i; });
@@ -740,7 +768,7 @@ async function callModel(settings, signal, c) {
   const toolsChars = JSON.stringify(toolDefinitions(settings, c)).length;
   // 快到上限：先自动整理（失败就照旧，超出预算时省略最早的几轮）
   const limit = ctxLimit(settings);
-  if ((charsOf(messages) + toolsChars) * (c.ctxRatio || CTX_DEFAULT_RATIO) > limit * CTX_COMPACT_AT && c.messages.length > 4) {
+  if ((charsOf(messages) + toolsChars) * (c.ctxRatio || CTX_DEFAULT_RATIO) > Math.min(limit * CTX_COMPACT_AT, CTX_COMPACT_TOKENS) && c.messages.length > 4) {
     send({ type: 'status', text: T('compacting') });
     try {
       if ((await compactConv(c, { auto: true, signal })).ok) messages = build();
@@ -1859,6 +1887,8 @@ async function callMcpTool(name, args, signal) {
   return r.isError ? T('errorPrefix') + r.text : r.text;
 }
 
+const imageRejects = new WeakMap(); // 对话 -> 生图连续被内容审核拒绝的次数
+const noConvKey = {};
 async function generateImage(args, root, callId) {
   const s = loadSettings();
   if (!currentUser) return T('imageNeedsPlatform');
@@ -1898,9 +1928,19 @@ async function generateImage(args, root, callId) {
   });
   if (!r.ok) {
     if (r.error === 'unauthorized') send({ type: 'auth-expired' });
-    const detail = r.data && r.data.detail ? `（${String(r.data.detail).slice(0, 200)}）` : '';
+    // 内容审核没通过：告诉模型怎么改说法再试一次；同一个对话连续被拒两次就别再试了，让它跟用户说明
+    const raw = String(r.data?.detail || '');
+    if (/Sensitive|sensitive|审核|违规|risk/i.test(raw)) {
+      const c = runCtx.getStore()?.conv || conv || noConvKey;
+      const n = (imageRejects.get(c) || 0) + 1;
+      imageRejects.set(c, n);
+      const kind = /InputImage/i.test(raw) ? 'imageRejectRef' : /OutputImage/i.test(raw) ? 'imageRejectOutput' : 'imageRejectPrompt';
+      return T('errorPrefix') + T(kind) + (kind === 'imageRejectRef' || n >= 2 ? T('imageRejectStop') : T('imageRejectRetry'));
+    }
+    const detail = raw ? `（${raw.slice(0, 200)}）` : '';
     return T('errorPrefix') + T('err_' + r.error) + detail;
   }
+  imageRejects.delete(runCtx.getStore()?.conv || conv || noConvKey);
   const img = r.data.images[0];
   const ext = img.format === 'jpeg' ? 'jpg' : 'png';
   let rel = (args.path || `images/shuttle-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}.${ext}`).replace(/^\/+/, '');
@@ -1945,14 +1985,14 @@ async function executeTool(name, args, root, signal, callId) {
     case 'find_files':
       return tools.findFiles(root, args.pattern, args.path, st.ignoreDirs);
     case 'edit_file': {
-      const { abs, text, diff } = tools.makeEditPreview(root, args.path, args.old_string, args.new_string);
+      const { abs, newText, diff, startLine, how } = tools.makeEditPreview(root, args.path, args.old_string, args.new_string);
       if (needsConfirm(name)) {
         const ok = await askConfirm({ tool: name, title: T('confirmEdit', { path: args.path }), diff });
         if (!ok) return T('rejectedEdit');
       }
       tools.backup(BACKUP_DIR(), abs);
-      fs.writeFileSync(abs, text.replace(args.old_string, () => args.new_string));
-      return T('edited', { path: args.path }) + (await autoPreview(abs));
+      fs.writeFileSync(abs, newText);
+      return T('edited', { path: args.path }) + (how === 'loose' ? T('editedLoose', { line: startLine }) : '') + (await autoPreview(abs));
     }
     case 'write_file': {
       const abs = tools.safePath(root, args.path);
