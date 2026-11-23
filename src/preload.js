@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('api', {
   convSyncNow: () => ipcRenderer.invoke('convsync:now'),
   mcpGet: () => ipcRenderer.invoke('mcp:get'),
   mcpSave: (text) => ipcRenderer.invoke('mcp:save', text),
+  mcpInstallPlatform: (tk) => ipcRenderer.invoke('mcp:installPlatform', tk),
   mcpToggle: (name, enabled) => ipcRenderer.invoke('mcp:toggle', name, enabled),
   mcpRestart: (name) => ipcRenderer.invoke('mcp:restart', name),
   mcpInstall: (rt) => ipcRenderer.invoke('mcp:install', rt),

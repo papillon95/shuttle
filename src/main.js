@@ -3575,6 +3575,18 @@ ipcMain.handle('connector:add', async (_e, code) => {
   }
   return { ok: true, status: mcp.status() };
 });
+// 把 Shuttle 平台自己的 MCP（查额度、用量、会员）加到 Shuttle 里：令牌加密存在 mcpSecrets，不写明文
+ipcMain.handle('mcp:installPlatform', (_e, tk) => {
+  if (!/^shm_[A-Za-z0-9]{20,80}$/.test(String(tk || ''))) return { ok: false, error: T('mcpTokenInstallFailed') };
+  const name = 'shuttle-platform';
+  const base = (loadSettings().serverUrl || DEFAULT_SERVER).replace(/\/$/, '');
+  saveMcpSecret(name, 'header', 'Authorization', 'Bearer ' + tk);
+  const s = loadSettings();
+  s.mcpServers = { ...(s.mcpServers || {}), [name]: { type: 'http', url: base + '/aidesk/mcp' } };
+  saveSettings(s);
+  applyMcp();
+  return { ok: true, status: mcp.status() };
+});
 ipcMain.handle('connector:remove', (_e, code) => {
   const s = loadSettings();
   if (s.mcpServers) delete s.mcpServers[code];
@@ -3838,7 +3850,7 @@ function reportUsage(settings, usage, status, latencyMs, errorCode) {
 
 // 界面调用服务端业务接口的通道（账号、用量、反馈、公告、版本）
 ipcMain.handle('api:call', async (_e, method, pathname, body) => {
-  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
+  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|mcp-tokens|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
   // 语音识别最长 60 秒音频，腾讯云返回较慢，放宽超时
   const timeout = pathname === '/aidesk/asr' ? 30000 : undefined;
   const r = await api(pathname, { method, body, token: token(), timeout });

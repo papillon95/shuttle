@@ -2442,6 +2442,10 @@ async function loadAccount() {
   $('profEmail').value = me.user.email || '';
   $('dangerZone').classList.toggle('hidden', me.user.role === 'admin');
   loadDevices();
+  loadMcpTokens();
+  $('mcpUrlText').textContent = mcpUrl();
+  $('mcpTokenNew').classList.add('hidden');
+  newMcpToken = '';
 }
 async function loadDevices() {
   const r = await window.api.call('GET', '/aidesk/account/sessions');
@@ -2461,6 +2465,52 @@ async function loadDevices() {
     box.appendChild(el);
   }
 }
+// ---------- MCP 令牌：在 Claude、Cursor 等工具里连 Shuttle 平台，查额度、用量、会员 ----------
+const mcpUrl = () => (settings.serverUrl || 'https://richbrian.site').replace(/\/$/, '') + '/aidesk/mcp';
+async function loadMcpTokens() {
+  const r = await window.api.call('GET', '/aidesk/mcp-tokens');
+  const box = $('mcpTokenList');
+  box.innerHTML = '';
+  if (!r.ok) return;
+  for (const t of r.data.tokens) {
+    const el = document.createElement('div');
+    el.className = 'device';
+    const used = t.lastUsedAt ? T('mcpTokenUsed', { t: fmtTime(t.lastUsedAt) }) : T('mcpTokenNeverUsed');
+    const oauth = !!t.clientId;
+    el.innerHTML = `<div><b>${esc(t.name || T('mcpTokenUnnamed'))}</b>${oauth ? `<span class="tag">${esc(T('mcpTokenOAuth'))}</span>` : ''}
+      <div class="hint">${oauth ? '' : esc(t.tokenPrefix) + '… · '}${esc(T(oauth ? 'mcpTokenAuthorized' : 'mcpTokenCreated', { t: fmtTime(t.createTime) }))} · ${esc(used)}${!oauth && t.expiresAt ? ' · ' + esc(T('mcpTokenExpires', { t: fmtTime(t.expiresAt) })) : ''}</div></div>
+      <button class="ghost small">${esc(T('mcpTokenRevoke'))}</button>`;
+    el.querySelector('button').addEventListener('click', async () => {
+      if (!confirm(T('mcpTokenRevokeConfirm', { name: t.name || t.tokenPrefix }))) return;
+      await window.api.call('DELETE', '/aidesk/mcp-tokens/' + t.id);
+      loadMcpTokens();
+    });
+    box.appendChild(el);
+  }
+}
+let newMcpToken = '';
+const mcpJson = (tk) => JSON.stringify({ mcpServers: { shuttle: { type: 'http', url: mcpUrl(), headers: { Authorization: 'Bearer ' + tk } } } }, null, 2);
+const copyMsg = async (text) => {
+  await navigator.clipboard.writeText(text);
+  formMsg('mcpTokenMsg', true, T('copied'));
+};
+$('mcpTokenCreate').onclick = async () => {
+  const r = await window.api.call('POST', '/aidesk/mcp-tokens', { name: $('mcpTokenName').value.trim() });
+  if (!r.ok) return formMsg('mcpTokenMsg', false, r.error === 'too_many_tokens' ? T('mcpTokenTooMany') : errText(r));
+  newMcpToken = r.data.token;
+  $('mcpTokenValue').textContent = newMcpToken;
+  $('mcpTokenNew').classList.remove('hidden');
+  $('mcpTokenName').value = '';
+  loadMcpTokens();
+};
+$('mcpTokenCopy').onclick = () => copyMsg(newMcpToken);
+$('mcpUrlCopy').onclick = () => copyMsg(mcpUrl());
+$('mcpTokenCopyJson').onclick = () => copyMsg(mcpJson(newMcpToken));
+$('mcpTokenCopyCli').onclick = () => copyMsg(`claude mcp add --transport http shuttle ${mcpUrl()} --header "Authorization: Bearer ${newMcpToken}"`);
+$('mcpTokenInstall').onclick = async () => {
+  const r = await window.api.mcpInstallPlatform(newMcpToken);
+  formMsg('mcpTokenMsg', !!r?.ok, r?.ok ? T('mcpTokenInstalled') : r?.error || T('mcpTokenInstallFailed'));
+};
 $('revokeOthers').onclick = async () => {
   const r = await window.api.call('POST', '/aidesk/account/sessions/revoke-others');
   if (r.ok) loadDevices();

@@ -166,6 +166,27 @@
           <div id="deviceList"></div>
           <div class="row set-actions"><button id="revokeOthers" class="ghost" data-i18n="revokeOthers"></button></div>
 
+          <h4 data-i18n="mcpTokens"></h4>
+          <div class="hint set-hint" data-i18n="mcpTokensHint"></div>
+          <div class="mcp-url-row"><code id="mcpUrlText"></code><button id="mcpUrlCopy" class="ghost small" data-i18n="mcpUrlCopy"></button></div>
+          <div class="hint set-hint" data-i18n="mcpTokensManualHint"></div>
+          <div id="mcpTokenList"></div>
+          <div id="mcpTokenNew" class="mcp-token-new hidden">
+            <div class="hint" data-i18n="mcpTokenOnce"></div>
+            <code id="mcpTokenValue"></code>
+            <div class="row">
+              <button id="mcpTokenCopy" class="ghost small" data-i18n="mcpTokenCopy"></button>
+              <button id="mcpTokenCopyJson" class="ghost small" data-i18n="mcpTokenCopyJson"></button>
+              <button id="mcpTokenCopyCli" class="ghost small" data-i18n="mcpTokenCopyCli"></button>
+              <button id="mcpTokenInstall" class="ghost small" data-i18n="mcpTokenInstall"></button>
+            </div>
+          </div>
+          <div class="row set-actions">
+            <input id="mcpTokenName" maxlength="50" data-i18n-ph="mcpTokenNamePh" />
+            <button id="mcpTokenCreate" class="ghost" data-i18n="mcpTokenCreate"></button>
+            <span class="form-msg" id="mcpTokenMsg"></span>
+          </div>
+
           <div id="dangerZone">
             <h4 class="danger-title" data-i18n="deleteAccount"></h4>
             <div class="set-group danger-group">
