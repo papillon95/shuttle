@@ -422,7 +422,7 @@ function agentSection() {
     return `
 
 Deep coding mode (be more thorough than usual):
-A. Understand before changing: use search and list_dir to find the relevant code, read the related files and their callers, and learn the project's conventions (naming, style, libraries, how tests are written). Follow them instead of inventing your own.
+A. Understand before changing: use find_files, search and list_dir to find the relevant code, read the related files and their callers, and learn the project's conventions (naming, style, libraries, how tests are written). Follow them instead of inventing your own.
 B. For multi-step tasks, first tell the user a short plan (3-7 steps), then work through it. If the plan turns out wrong, adjust it and say why.
 C. Call independent read-only tools (reading several files, several searches) together in the same turn to save time.
 D. Verify after changing: if the project can build, type-check, test or lint, run it (check package.json, Makefile or README for how). Fix failures and run again until it passes. Say honestly what you could not verify.
@@ -434,7 +434,7 @@ H. End with a short summary: what you did, which files changed, verification res
   return `
 
 深度编程模式（比平时更仔细）：
-A. 先摸清再动手：用 search、list_dir 找到相关代码，读懂相关文件和调用它的地方，弄清项目已有的写法（命名、风格、用的库、测试怎么写），照着项目的习惯改，不要另起一套。
+A. 先摸清再动手：用 find_files、search、list_dir 找到相关代码，读懂相关文件和调用它的地方，弄清项目已有的写法（命名、风格、用的库、测试怎么写），照着项目的习惯改，不要另起一套。
 B. 多步骤的任务，先告诉用户一个简短计划（3～7 步），再按计划做；发现计划不对就调整，并说明原因。
 C. 互不依赖的查看操作（读多个文件、多处搜索）放在同一轮里一起调用，节省时间。
 D. 改完要验证：项目能构建、类型检查、跑测试或 lint 的，就跑一下（先看 package.json、Makefile、README 里怎么跑）；有错误就修好再跑，直到通过。没法验证的地方如实说明。
@@ -472,7 +472,7 @@ Today: ${new Date().toISOString().slice(0, 10)}
 ${identityLine()}
 Rules:
 0. If the user is just greeting, chatting or asking something unrelated to their files, answer directly without calling tools. Only look at files when the task needs it.
-1. If you are unsure where a file is, use list_dir or search first. Do not guess paths.
+1. If you are unsure where a file is, use find_files (by file name) or search (by content) first. Do not guess paths, and do not run grep, find, cat or ls through run_command instead of these tools.
 2. Always read_file before editing. Use edit_file for minimal changes; old_string must match the original exactly and be unique.
 3. Writing files and running commands may need the user's approval. If the user rejects, stop and ask why instead of trying another way.
 4. Do not run destructive commands (such as rm -rf or git push --force) unless the user explicitly asks.
@@ -496,7 +496,7 @@ Rules:
 ${identityLine()}
 工作原则：
 0. 用户只是打招呼、闲聊，或问和他的文件无关的问题时，直接回答，不要调用工具；只有任务需要时才去看文件。
-1. 不确定文件位置时，先用 list_dir 或 search 查找，不要猜测路径。
+1. 不确定文件位置时，先用 find_files（按文件名）或 search（按内容）查找，不要猜测路径；不要用 run_command 执行 grep、find、cat、ls 代替这些工具。
 2. 修改文件前必须先 read_file 查看原文；用 edit_file 做最小化修改，old_string 要与原文完全一致并且唯一。
 3. 写文件、执行命令可能需要用户确认，用户拒绝时请停下来询问原因，不要换个方式硬做。
 4. 不要执行破坏性命令（如 rm -rf、git push --force），除非用户明确要求。
@@ -1344,7 +1344,7 @@ async function scheduleTool(args) {
 }
 
 // 纯聊天对话不给的工具：读写文件、执行命令（附件仍可用 read_file 按完整路径读）
-const FOLDER_ONLY_TOOLS = new Set(['list_dir', 'search', 'edit_file', 'write_file', 'run_command']);
+const FOLDER_ONLY_TOOLS = new Set(['list_dir', 'search', 'find_files', 'edit_file', 'write_file', 'run_command']);
 function toolDefinitions(settings, c) {
   const all = toolDefinitionsAll(settings);
   if (c?.workspace) return all;
@@ -1941,7 +1941,9 @@ async function executeTool(name, args, root, signal, callId) {
       return tools.readFile(root, args.path, args.start_line, args.end_line);
     }
     case 'search':
-      return tools.search(root, args.pattern, args.ext, st.ignoreDirs);
+      return tools.search(root, args.pattern, { path: args.path, glob: args.glob, ext: args.ext, ignore_case: args.ignore_case, literal: args.literal, context: args.context }, st.ignoreDirs);
+    case 'find_files':
+      return tools.findFiles(root, args.pattern, args.path, st.ignoreDirs);
     case 'edit_file': {
       const { abs, text, diff } = tools.makeEditPreview(root, args.path, args.old_string, args.new_string);
       if (needsConfirm(name)) {

@@ -54,10 +54,34 @@ const definitions = [
     type: 'function',
     function: {
       name: 'search',
-      description: '在工作目录中按正则搜索文件内容，返回 文件:行号: 内容。可选 glob 后缀过滤，如 ".js"。',
+      description:
+        '按内容搜索（代替 grep），返回 文件:行号: 内容 和匹配总数。pattern 是正则，literal=true 按普通文字；path 限定目录或文件；glob 过滤文件名如 "*.java"；ignore_case 忽略大小写；context 带前后几行（0～5）。',
       parameters: {
         type: 'object',
-        properties: { pattern: { type: 'string' }, ext: { type: 'string' } },
+        properties: {
+          pattern: { type: 'string' },
+          path: { type: 'string' },
+          glob: { type: 'string' },
+          ignore_case: { type: 'boolean' },
+          literal: { type: 'boolean' },
+          context: { type: 'integer' },
+        },
+        required: ['pattern'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'find_files',
+      description:
+        '按文件名找文件（代替 find），返回相对路径。pattern 不带通配符时匹配「文件名包含这段文字」（不分大小写），也可用 "*.sql"、"src/**/test_*.py"；path 限定目录。',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string' },
+          path: { type: 'string' },
+        },
         required: ['pattern'],
       },
     },
@@ -166,35 +190,234 @@ function numberLines(lines, start, end) {
   return out;
 }
 
-function search(root, pattern, ext, ignore = DEFAULT_IGNORE) {
+// ---------- 搜索内容 / 按文件名找文件 ----------
+// 都是异步的：大文件夹里搜索不会卡住界面。电脑上装了 ripgrep（rg）就用它，快很多；没装用下面的 Node 实现，结果格式一样。
+const SEARCH_FULL_HITS = 50; // 匹配不超过这么多处：全部列出（带上下文）
+const SEARCH_PREVIEW_HITS = 20; // 超过时：列每个文件的匹配数，再给前这么多处
+const SEARCH_MAX_FILES_LISTED = 100;
+const SEARCH_MAX_CHARS = 24 * 1024;
+const FIND_MAX = 200;
+const MAX_FILES_SCANNED = 60000;
+const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|bmp|tiff?|pdf|zip|gz|tgz|7z|rar|jar|war|class|so|dylib|dll|exe|bin|o|a|pyc|woff2?|ttf|otf|eot|mp[34]|mov|avi|wav|flac|ogg|sqlite|db|psd|ai|sketch|xlsx?|docx?|pptx?)$/i;
+
+// 通配符转正则：** 跨目录，* 和 ? 不跨目录，{a,b} 多选一；不带 / 的只和文件名比
+function globToRegExp(glob, ignoreCase = true) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        i++;
+        if (glob[i + 1] === '/') i++, (re += '(?:.*/)?');
+        else re += '.*';
+      } else re += '[^/]*';
+    } else if (c === '?') re += '[^/]';
+    else if (c === '{') {
+      const end = glob.indexOf('}', i);
+      if (end < 0) re += '\\{';
+      else {
+        re += '(?:' + glob.slice(i + 1, end).split(',').map((s) => s.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')).join('|') + ')';
+        i = end;
+      }
+    } else re += c.replace(/[.+^$()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp('^' + re + '$', ignoreCase ? 'i' : '');
+}
+function globMatcher(glob) {
+  if (!glob) return () => true;
+  const g = glob.replace(/\\/g, '/').replace(/^\.\//, '');
+  const re = globToRegExp(g);
+  return g.includes('/') ? (rel) => re.test(rel) : (rel) => re.test(rel.slice(rel.lastIndexOf('/') + 1));
+}
+// 遍历目录（跳过忽略的目录），对每个文件调用 onFile(绝对路径, 相对路径)；返回 false 停止
+async function walkFiles(root, start, ignore, onFile) {
   const IGNORE = new Set(ignore);
-  const re = new RegExp(pattern);
-  const results = [];
-  const walk = (dir) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (results.length >= 100) return;
+  let count = 0;
+  let stop = false;
+  const visit = async (dir) => {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (stop) return;
       if (IGNORE.has(e.name)) continue;
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) walk(full);
-      else if (!ext || e.name.endsWith(ext)) {
-        let text;
-        try {
-          if (fs.statSync(full).size > 1024 * 1024) continue;
-          text = fs.readFileSync(full, 'utf8');
-        } catch {
-          continue;
-        }
-        if (text.includes('\u0000')) continue; // 跳过二进制
-        text.split('\n').forEach((line, i) => {
-          if (results.length < 100 && re.test(line)) {
-            results.push(`${path.relative(root, full)}:${i + 1}: ${line.trim().slice(0, 200)}`);
-          }
-        });
+      if (e.isDirectory()) await visit(full);
+      else if (e.isFile()) {
+        if (++count > MAX_FILES_SCANNED || (await onFile(full, path.relative(root, full).split(path.sep).join('/'))) === false) stop = true;
       }
     }
   };
-  walk(root);
-  return results.join('\n') || T('noMatch');
+  const st = await fs.promises.stat(start);
+  if (st.isFile()) await onFile(start, path.relative(root, start).split(path.sep).join('/'));
+  else await visit(start);
+  return count;
+}
+
+let rgPath; // undefined = 还没找过；null = 没装
+function findRg() {
+  if (rgPath !== undefined) return rgPath;
+  const names = process.platform === 'win32' ? ['rg.exe'] : ['rg'];
+  const dirs = [...(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
+  rgPath = null;
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = path.join(d, n);
+      try {
+        if (fs.statSync(p).isFile()) return (rgPath = p);
+      } catch {}
+    }
+  }
+  return rgPath;
+}
+
+// 搜索结果先按文件收集，再统一排版：匹配不多就全列出；太多就列每个文件的匹配数和前几处，让模型缩小范围再搜
+function newAcc() {
+  return { files: new Map(), hits: 0 };
+}
+function accAdd(acc, rel, kind, lineNo, text) {
+  let f = acc.files.get(rel);
+  if (!f) acc.files.set(rel, (f = { count: 0, lines: [] }));
+  if (kind === ':') {
+    f.count++;
+    acc.hits++;
+  }
+  // 只留够排版用的行（每个文件最多 60 行），匹配再多也不占内存
+  if (f.lines.length < 60) f.lines.push({ kind, no: lineNo, text: text.replace(/\r$/, '').trim().slice(0, 300) });
+}
+function formatSearch(acc, ctx) {
+  if (!acc.hits) return T('noMatch');
+  const files = [...acc.files.entries()].filter(([, f]) => f.count);
+  const head = T('searchSummary', { n: acc.hits, files: files.length });
+  const render = (limitHits) => {
+    const out = [];
+    let shown = 0;
+    let chars = 0;
+    for (const [rel, f] of files) {
+      let last = -2;
+      for (const l of f.lines) {
+        if (l.kind === ':' && shown >= limitHits) break;
+        if (ctx && last >= 0 && l.no > last + 1) out.push('--');
+        const s = `${rel}${l.kind}${l.no}: ${l.text}`;
+        out.push(s);
+        chars += s.length + 1;
+        last = l.no;
+        if (l.kind === ':') shown++;
+      }
+      if (ctx) out.push('--');
+      if (shown >= limitHits || chars > SEARCH_MAX_CHARS) break;
+    }
+    while (out[out.length - 1] === '--') out.pop();
+    return out.join('\n');
+  };
+  if (acc.hits <= SEARCH_FULL_HITS) return head + '\n' + render(SEARCH_FULL_HITS);
+  const list = files.slice(0, SEARCH_MAX_FILES_LISTED).map(([rel, f]) => `${rel} (${f.count})`).join('\n');
+  return head + T('searchTooMany', { n: SEARCH_PREVIEW_HITS }) + '\n' + list + (files.length > SEARCH_MAX_FILES_LISTED ? '\n…' : '') + '\n\n' + render(SEARCH_PREVIEW_HITS);
+}
+
+// opts: { path, glob, ext, ignore_case, literal, context }
+async function search(root, pattern, opts = {}, ignore = DEFAULT_IGNORE) {
+  if (!pattern) throw new Error(T('noPattern'));
+  const start = safePath(root, opts.path || '.');
+  if (!fs.existsSync(start)) throw new Error(T('notExist', { path: opts.path }));
+  const ctx = Math.max(0, Math.min(5, Number(opts.context) || 0));
+  const glob = opts.glob || (opts.ext ? '*' + (opts.ext.startsWith('.') ? opts.ext : '.' + opts.ext) : '');
+  let re;
+  try {
+    re = new RegExp(opts.literal ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : pattern, opts.ignore_case ? 'i' : '');
+  } catch (e) {
+    throw new Error(T('badPattern', { err: e.message }));
+  }
+  const rg = findRg();
+  if (rg) {
+    try {
+      return formatSearch(await searchRg(rg, root, start, pattern, { ...opts, glob, ctx }, ignore), ctx);
+    } catch {
+      // rg 出错（版本太旧、参数不支持等）就用 Node 实现
+    }
+  }
+  const match = globMatcher(glob);
+  const acc = newAcc();
+  await walkFiles(root, start, ignore, async (full, rel) => {
+    if (!match(rel) || BINARY_EXT.test(rel)) return;
+    let text;
+    try {
+      const st = await fs.promises.stat(full);
+      if (st.size > 2 * 1024 * 1024) return;
+      text = await fs.promises.readFile(full, 'utf8');
+    } catch {
+      return;
+    }
+    if (text.includes('\u0000')) return; // 二进制
+    const lines = text.split('\n');
+    const idx = [];
+    for (let i = 0; i < lines.length; i++) if (re.test(lines[i])) idx.push(i);
+    if (!idx.length) return;
+    const isHit = new Set(idx);
+    let last = -1;
+    for (const i of idx) {
+      for (let k = Math.max(i - ctx, last + 1); k <= Math.min(lines.length - 1, i + ctx); k++) {
+        accAdd(acc, rel, isHit.has(k) ? ':' : '-', k + 1, lines[k]);
+        last = k;
+      }
+    }
+  });
+  return formatSearch(acc, ctx);
+}
+
+function searchRg(rg, root, start, pattern, o, ignore) {
+  const { spawn } = require('child_process');
+  const args = ['--line-number', '--no-heading', '--color', 'never', '--hidden', '--max-columns', '300', '--max-columns-preview', '--max-filesize', '2M'];
+  if (o.ignore_case) args.push('-i');
+  if (o.literal) args.push('-F');
+  if (o.ctx) args.push('-C', String(o.ctx));
+  if (o.glob) args.push('--iglob', o.glob.includes('/') ? o.glob : '**/' + o.glob);
+  for (const d of ignore) args.push('--glob', '!' + d);
+  args.push('-e', pattern, '--', path.relative(root, start) || '.');
+  return new Promise((resolve, reject) => {
+    const child = spawn(rg, args, { cwd: root });
+    const acc = newAcc();
+    let buf = '';
+    let err = '';
+    const take = (line) => {
+      const m = /^(.+?)([:-])(\d+)[:-](.*)$/.exec(line || '');
+      if (m) accAdd(acc, m[1].replace(/^\.\//, '').split(path.sep).join('/'), m[2], Number(m[3]), m[4]);
+    };
+    child.stdout.on('data', (d) => {
+      buf += d.toString('utf8');
+      const parts = buf.split('\n');
+      buf = parts.pop();
+      parts.forEach(take);
+      if (acc.hits > 5000) child.kill(); // 匹配太多：已经够说明问题了
+    });
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      take(buf);
+      if (code === 2 && !acc.hits) return reject(new Error(err || 'rg failed'));
+      resolve(acc);
+    });
+  });
+}
+
+async function findFiles(root, pattern, sub, ignore = DEFAULT_IGNORE) {
+  if (!pattern) throw new Error(T('noPattern'));
+  const start = safePath(root, sub || '.');
+  if (!fs.existsSync(start)) throw new Error(T('notExist', { path: sub }));
+  const p = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
+  const wild = /[*?{]/.test(p);
+  const needle = p.toLowerCase();
+  const match = wild ? globMatcher(p) : (rel) => rel.slice(rel.lastIndexOf('/') + 1).toLowerCase().includes(needle) || (needle.includes('/') && rel.toLowerCase().includes(needle));
+  const found = [];
+  await walkFiles(root, start, ignore, (full, rel) => {
+    if (match(rel)) found.push(rel);
+  });
+  found.sort();
+  if (!found.length) return T('noFiles');
+  return T('findSummary', { n: found.length }) + (found.length > FIND_MAX ? T('findTruncated', { n: FIND_MAX }) : '') + '\n' + found.slice(0, FIND_MAX).join('\n');
 }
 
 // 生成一个简单的 diff 预览，供用户确认
@@ -241,4 +464,4 @@ function runCommand(root, command, signal, timeoutSec = 60, extraPath = []) {
   });
 }
 
-module.exports = { setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, makeEditPreview, backup, runCommand };
+module.exports = { setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, makeEditPreview, backup, runCommand };
