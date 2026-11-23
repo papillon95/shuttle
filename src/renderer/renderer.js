@@ -174,6 +174,27 @@ function fileUrl(p) {
   const norm = String(p).replace(/\\/g, '/');
   return 'file://' + (norm.startsWith('/') ? '' : '/') + norm.split('/').map(encodeURIComponent).join('/').replace(/^\/([A-Za-z])%3A/, '/$1:');
 }
+// 批量生图：每生成一张就往网格里加一张缩略图
+function showToolImageGrid(callId, absPath) {
+  const el = toolEls[callId];
+  if (!el) return;
+  let grid = el.querySelector('.gen-grid');
+  if (!grid) {
+    grid = document.createElement('div');
+    grid.className = 'gen-grid';
+    el.insertBefore(grid, el.querySelector('pre'));
+  }
+  if ([...grid.children].some((x) => x.title === absPath)) return;
+  const img = document.createElement('img');
+  img.src = fileUrl(absPath) + '?t=' + Date.now();
+  img.title = absPath;
+  img.loading = 'lazy';
+  img.onclick = () => window.api.openImage(absPath);
+  img.onerror = () => img.remove();
+  grid.appendChild(img);
+  el.open = true;
+  $('log').scrollTop = $('log').scrollHeight;
+}
 function showToolImage(callId, absPath) {
   const el = toolEls[callId];
   if (!el || el.querySelector('.gen-img')) return;
@@ -232,6 +253,7 @@ function toolSummary(name, a) {
   if (name === 'search') return a.pattern;
   if (name === 'run_command') return a.command;
   if (name === 'generate_image') return a.prompt;
+  if (name === 'generate_images') return T('batchToolSummary', { n: (a.items || []).length });
   if (name === 'ask_expert') return (a.expert ? a.expert + ' · ' : '') + (a.question || '');
   return a.path || '';
 }
@@ -585,6 +607,9 @@ function renderMessages(messages, compact) {
       // 生成的图片：从工具结果里取出保存路径（相对工作区），显示预览
       const saved = call.name === 'generate_image' && /(?:已保存图片|Saved image) (.+?)(?:（| \()/.exec(m.content || '');
       if (saved && settings.workspace) showToolImage(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + saved[1]);
+      if (call.name === 'generate_images' && settings.workspace) {
+        for (const mm of String(m.content || '').matchAll(/^(?:已保存|Saved) (.+\.(?:png|jpe?g|webp))$/gim)) showToolImageGrid(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + mm[1]);
+      }
     }
   }
   renderExpertBar();
@@ -1527,7 +1552,8 @@ window.api.onEvent((evt) => {
       renderTool(evt);
       break;
     case 'image':
-      showToolImage(evt.callId, evt.path);
+      if (evt.multi) showToolImageGrid(evt.callId, evt.path);
+      else showToolImage(evt.callId, evt.path);
       break;
     case 'confirm':
       showConfirm(evt);

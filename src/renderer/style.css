@@ -1060,3 +1060,7 @@ body.has-bg .log .msg.user, body.has-bg .log pre, body.has-bg .log code, body.ha
 #mcpTokenName { flex: 1; min-width: 160px; }
 .mcp-url-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 10px; }
 .mcp-url-row code { flex: 1; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); user-select: all; word-break: break-all; }
+
+/* 批量生图的缩略图网格 */
+.gen-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; margin: 8px 0; }
+.gen-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); cursor: zoom-in; background: var(--panel); }

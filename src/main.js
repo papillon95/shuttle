@@ -904,7 +904,7 @@ const IMAGE_TOOL = {
   function: {
     name: 'generate_image',
     description:
-      '根据文字描述生成一张图片并保存到工作目录（豆包 Seedream）。也能在已有图片上修改：带上参考图（use_attached_images 或 reference_images），prompt 里写清楚要改什么、哪些保持不变。用户要在他发的图上画东西、改东西时一定要用这个，不要自己写代码画。每张图都会消耗用户的会员额度，只在用户明确想要图片时调用。生成的图片会直接显示在对话里，不需要再用浏览器打开查看。prompt 要具体：主体、风格、构图、颜色、画面比例等。',
+      '根据文字描述生成一张图片并保存到工作目录（豆包 Seedream）。一次要生成 2 张以上不同的图时改用 generate_images。也能在已有图片上修改：带上参考图（use_attached_images 或 reference_images），prompt 里写清楚要改什么、哪些保持不变。用户要在他发的图上画东西、改东西时一定要用这个，不要自己写代码画。每张图都会消耗用户的会员额度，只在用户明确想要图片时调用。生成的图片会直接显示在对话里，不需要再用浏览器打开查看。prompt 要具体：主体、风格、构图、颜色、画面比例等。',
     parameters: {
       type: 'object',
       properties: {
@@ -915,6 +915,44 @@ const IMAGE_TOOL = {
         reference_images: { type: 'array', items: { type: 'string' }, description: '作为参考图的工作目录里的图片路径（png / jpg / webp），比如要在已有图片上修改时' },
       },
       required: ['prompt'],
+    },
+  },
+};
+// 批量生图：一次按清单生成多张（比如照着一份美术素材文档出 40 张图）。先估算额度，够才开始，开始前让用户确认
+const IMAGE_BATCH_MAX = 50;
+const IMAGE_BATCH_TOOL = {
+  type: 'function',
+  function: {
+    name: 'generate_images',
+    description:
+      '按清单批量生成多张图片并保存到工作目录（豆包 Seedream）。用户要一次生成 2 张以上不同的图（一套素材、照着文档里的图片清单生成、多个角色或场景）时用这个，不要反复调用 generate_image。' +
+      '调用前先把文档或需求整理成完整清单：每张图一个 item，写清楚保存路径和具体的 prompt；所有图共用的画风、负面要求写在 style 里。' +
+      '需要统一角色或画风时，先安排一张设定图，其余 item 用 reference 指向它的 path（会等它生成完再用作参考图）；「同一姿势的另一个版本」也用 reference 指向原图。' +
+      'priority 按文档里的优先级填（1 必需、2 推荐、3 可选）。工具会先算总共要扣多少额度：余额不够时不会生成，会告诉你最多够几张，你再问用户是只生成优先级最高的那几张，还是先去充值。' +
+      '额度够时会弹窗让用户确认，用户同意才开始。已经存在的文件会跳过（中途停了再调一次就是接着生成）；被内容审核拒绝的会列出来，你换个说法只重新提交那几张。',
+    parameters: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          description: `要生成的图片清单，最多 ${IMAGE_BATCH_MAX} 张`,
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: '保存路径（相对工作目录），如 sanda-assets/char/tang_stand.png；.jpg 会存成 JPEG' },
+              prompt: { type: 'string', description: '这一张的具体描述（中文或英文，800 字以内）' },
+              aspect: { type: 'string', enum: ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'], description: '画面比例，默认 1:1' },
+              reference: { type: 'string', description: '参考图路径：本清单里另一张的 path，或工作目录里已有的图片' },
+              priority: { type: 'integer', enum: [1, 2, 3], description: '1 必需、2 推荐、3 可选，默认 1' },
+            },
+            required: ['path', 'prompt'],
+          },
+        },
+        style: { type: 'string', description: '每张图都要加上的共同要求：画风关键词、负面要求、背景色等（800 字以内）' },
+        quality: { type: 'string', enum: ['standard', 'hd'], description: '清晰度：standard 约 100～200 万像素（默认，适合游戏素材、配图）；hd 约 400 万像素，每张多扣一半额度，只在用户明确要高清时用' },
+        overwrite: { type: 'boolean', description: '文件已存在时是否重新生成覆盖，默认 false（跳过）' },
+      },
+      required: ['items'],
     },
   },
 };
@@ -1381,7 +1419,7 @@ function toolDefinitions(settings, c) {
 }
 function toolDefinitionsAll(settings) {
   // 生图始终走平台（扣会员额度），和对话用的是平台模型还是自己的 Key 无关
-  const base = currentUser && imageModels().length ? [...tools.definitions, IMAGE_TOOL] : tools.definitions;
+  const base = currentUser && imageModels().length ? [...tools.definitions, IMAGE_TOOL, IMAGE_BATCH_TOOL] : tools.definitions;
   const expertTool = settings.expertAuto !== false && expertsAvail.length ? [expertToolDef()] : [];
   return [...base, ...expertTool, ...BROWSER_TOOLS, SCHEDULE_TOOL, ...MCP_ADMIN_TOOLS, ...(hasEnabledSkills() ? [SKILL_TOOL] : []), ...(mcp.lazyServers().length ? MCP_LAZY_TOOLS : []), ...mcp.toolDefinitions()];
 }
@@ -1954,17 +1992,210 @@ async function generateImage(args, root, callId) {
   return T('imageSaved', { path: rel, size: img.size || '', billed: Number(r.data.billed || 0).toLocaleString() });
 }
 
+// 画面比例 → 像素尺寸。standard 都在 Seedream 的低价档（≤ 261 万像素），hd 在高价档（≤ 463 万像素）
+const IMAGE_SIZES = {
+  standard: { '1:1': '1024x1024', '2:3': '1024x1536', '3:2': '1536x1024', '3:4': '1152x1536', '4:3': '1536x1152', '9:16': '1080x1920', '16:9': '1920x1080' },
+  hd: { '1:1': '2048x2048', '2:3': '1664x2496', '3:2': '2496x1664', '3:4': '1728x2304', '4:3': '2304x1728', '9:16': '1440x2560', '16:9': '2560x1440' },
+};
+const IMAGE_HD_FACTOR = 1.5;
+function imageMime(abs) {
+  const ext = path.extname(abs).toLowerCase();
+  return ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : /\.jpe?g$/.test(ext) ? 'image/jpeg' : '';
+}
+/** 批量生图：清单 → 估算额度 → 不够就不生成（告诉模型最多够几张）→ 用户确认 → 按参考图依赖并发生成 */
+async function generateImages(args, root, callId, signal) {
+  if (!currentUser) return T('imageNeedsPlatform');
+  const m = imageModels()[0];
+  if (!m) return T('errorPrefix') + T('err_model_unavailable');
+  const items = Array.isArray(args.items) ? args.items : [];
+  if (!items.length) return T('errorPrefix') + T('batchEmpty');
+  if (items.length > IMAGE_BATCH_MAX) return T('errorPrefix') + T('batchTooMany', { max: IMAGE_BATCH_MAX });
+  const quality = args.quality === 'hd' ? 'hd' : 'standard';
+  const style = String(args.style || '').slice(0, 800);
+  // 校验清单：路径在工作目录里、不重复、参考图存在或在清单里
+  const byPath = new Map();
+  const list = [];
+  for (const [i, it] of items.entries()) {
+    const rel = String(it?.path || '').replace(/^[/\\]+/, '').trim();
+    const prompt = String(it?.prompt || '').trim();
+    if (!rel || !prompt) return T('errorPrefix') + T('batchBadItem', { n: i + 1 });
+    if (!/\.(png|jpe?g|webp)$/i.test(rel)) return T('errorPrefix') + T('batchBadExt', { path: rel });
+    const abs = tools.safePath(root, rel);
+    if (byPath.has(abs)) return T('errorPrefix') + T('batchDup', { path: rel });
+    const aspect = IMAGE_SIZES.standard[it.aspect] ? it.aspect : '1:1';
+    const x = { rel, abs, prompt: prompt.slice(0, 800), aspect, priority: [1, 2, 3].includes(it.priority) ? it.priority : 1, ref: it.reference ? String(it.reference).replace(/^[/\\]+/, '').trim() : '' };
+    byPath.set(abs, x);
+    list.push(x);
+  }
+  for (const x of list) {
+    if (!x.ref) continue;
+    x.refAbs = tools.safePath(root, x.ref);
+    if (x.refAbs === x.abs) return T('errorPrefix') + T('batchSelfRef', { path: x.rel });
+    if (!byPath.has(x.refAbs) && !fs.existsSync(x.refAbs)) return T('errorPrefix') + T('imageRefMissing', { path: x.ref });
+    if (!imageMime(x.refAbs)) return T('errorPrefix') + T('imageRefType', { path: x.ref });
+  }
+  // 参考图不能绕成圈
+  for (const x of list) {
+    const seen = new Set();
+    for (let y = x; y?.refAbs && byPath.has(y.refAbs); y = byPath.get(y.refAbs)) {
+      if (seen.has(y.abs)) return T('errorPrefix') + T('batchCycle', { path: x.rel });
+      seen.add(y.abs);
+    }
+  }
+  const todo = list.filter((x) => args.overwrite || !fs.existsSync(x.abs));
+  const skipped = list.length - todo.length;
+  if (!todo.length) return T('batchAllExist', { n: list.length });
+
+  // 估算额度：每张 = 模型单价（hd 多一半）；余额不够就不生成
+  const per = Math.ceil(Number(m.credits || 0) * (quality === 'hd' ? IMAGE_HD_FACTOR : 1));
+  const total = per * todo.length;
+  const q = await api('/aidesk/billing/quota', { token: token() });
+  if (!q.ok) {
+    if (q.error === 'unauthorized') send({ type: 'auth-expired' });
+    return T('errorPrefix') + T('err_' + q.error);
+  }
+  // 开发调试：AGENT_TEST_QUOTA 模拟余额（只在没打包的开发版生效）
+  const remaining = !app.isPackaged && process.env.AGENT_TEST_QUOTA ? Number(process.env.AGENT_TEST_QUOTA) : Number(q.data.remaining || 0);
+  if (per > 0 && total > remaining) {
+    const can = Math.floor(remaining / per);
+    const byPri = [1, 2, 3].map((p) => todo.filter((x) => x.priority === p).length);
+    send({ type: 'quota', quota: { remaining } });
+    return T('batchNotEnough', { n: todo.length, total: total.toLocaleString(), remaining: remaining.toLocaleString(), per: per.toLocaleString(), can, p1: byPri[0], p2: byPri[1], p3: byPri[2] });
+  }
+
+  // 用户确认：张数、预计扣多少、清单
+  const preview = todo.map((x, i) => `${i + 1}. ${x.rel}  [${x.aspect}${x.ref ? ' · ' + T('batchRefTag', { ref: x.ref }) : ''}]\n   ${x.prompt.slice(0, 120)}${x.prompt.length > 120 ? '…' : ''}`).join('\n');
+  const ok = await askConfirm({
+    tool: 'generate_images',
+    title: T('batchConfirm', { n: todo.length, total: total.toLocaleString(), remaining: remaining.toLocaleString() }),
+    command: (skipped ? T('batchSkipNote', { n: skipped }) + '\n\n' : '') + (style ? T('batchStyleLabel') + style + '\n\n' : '') + preview,
+  });
+  if (!ok) return T('rejectedImage');
+
+  // 生成：参考图在清单里的，等它生成完；最多同时 3 张；被限流就等一会儿再试
+  const watermark = loadSettings().imageWatermark !== false;
+  const done = new Map(); // abs -> 'ok' | 'fail' | 'skip'
+  for (const x of list) if (!todo.includes(x)) done.set(x.abs, 'skip');
+  const results = [];
+  let billed = 0;
+  let lastRemaining = remaining;
+  let finished = 0;
+  const progress = () => send({ type: 'status', text: T('batchProgress', { done: finished, n: todo.length }) });
+  const runOne = async (x) => {
+    const refs = [];
+    if (x.refAbs) {
+      const buf = fs.readFileSync(x.refAbs);
+      if (buf.length > 10 * 1024 * 1024) return { x, ok: false, why: T('imageRefTooBig', { path: x.ref }) };
+      refs.push(`data:${imageMime(x.refAbs)};base64,${buf.toString('base64')}`);
+    }
+    const prompt = (x.prompt + (style ? '\n' + style : '')).slice(0, 1900);
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      if (signal?.aborted) return { x, ok: false, why: T('batchStopped') };
+      const r = await api('/aidesk/image/generations', {
+        method: 'POST', token: token(), timeout: 240000,
+        body: { model: `${m.provider}:${m.id}`, prompt, size: IMAGE_SIZES[quality][x.aspect], watermark, ...(refs.length ? { images: refs } : {}) },
+      });
+      if (r.ok && r.data.images?.[0]) {
+        const img = r.data.images[0];
+        fs.mkdirSync(path.dirname(x.abs), { recursive: true });
+        if (fs.existsSync(x.abs)) tools.backup(BACKUP_DIR(), x.abs);
+        let buf = Buffer.from(img.b64, 'base64');
+        // 要 .jpg 但返回的是 png（或反过来）：用 Electron 自带的图片工具转一下
+        const wantJpeg = /\.jpe?g$/i.test(x.abs);
+        if (wantJpeg !== (img.format === 'jpeg')) {
+          try {
+            const ni = nativeImage.createFromBuffer(buf);
+            if (!ni.isEmpty()) buf = wantJpeg ? ni.toJPEG(92) : ni.toPNG();
+          } catch {}
+        }
+        fs.writeFileSync(x.abs, buf);
+        billed += Number(r.data.billed || 0);
+        if (r.data.remaining != null) lastRemaining = Number(r.data.remaining);
+        send({ type: 'image', callId, path: x.abs, multi: true });
+        return { x, ok: true };
+      }
+      if (r.error === 'unauthorized') {
+        send({ type: 'auth-expired' });
+        return { x, ok: false, why: T('err_unauthorized'), fatal: true };
+      }
+      if (r.error === 'quota_exceeded') return { x, ok: false, why: T('err_quota_exceeded'), fatal: true };
+      const raw = String(r.data?.detail || '');
+      if (/Sensitive|sensitive|审核|违规|risk/i.test(raw)) return { x, ok: false, rejected: true, why: /InputImage/i.test(raw) ? T('batchRejectRef') : T('batchRejectPrompt') };
+      // 限流、厂商繁忙、网络：等一会儿重试
+      if (attempt < 4) await new Promise((res) => setTimeout(res, (r.error === 'too_many_requests' ? 20000 : 6000) * attempt));
+      else return { x, ok: false, why: T('err_' + r.error) + (raw ? `（${raw.slice(0, 120)}）` : '') };
+    }
+  };
+  progress();
+  let stop = false;
+  const pending = [...todo];
+  const running = new Set();
+  await new Promise((resolveAll) => {
+    const pump = () => {
+      if (!pending.length && !running.size) return resolveAll();
+      while (!stop && running.size < 3) {
+        // 下一张能开始的：没有参考图，或者参考图已经好了（生成成功 / 本来就有）
+        const i = pending.findIndex((x) => !x.refAbs || !byPath.has(x.refAbs) || ['ok', 'skip'].includes(done.get(x.refAbs)));
+        // 参考图失败了的：直接记失败
+        const j = pending.findIndex((x) => x.refAbs && byPath.has(x.refAbs) && done.get(x.refAbs) === 'fail');
+        if (j >= 0) {
+          const [x] = pending.splice(j, 1);
+          done.set(x.abs, 'fail');
+          results.push({ x, ok: false, why: T('batchRefFailed', { ref: x.ref }) });
+          finished++;
+          continue;
+        }
+        if (i < 0) {
+          // 理论上不会发生（参考图依赖已检查过）；防止卡住
+          if (!running.size) for (const x of pending.splice(0)) results.push({ x, ok: false, why: T('batchNotRun') });
+          break;
+        }
+        const [x] = pending.splice(i, 1);
+        const p = runOne(x).then((res) => {
+          done.set(x.abs, res.ok ? 'ok' : 'fail');
+          results.push(res);
+          finished++;
+          progress();
+          if (res.fatal) stop = true;
+          running.delete(p);
+          pump();
+        });
+        running.add(p);
+      }
+      if ((stop || !pending.length) && !running.size) {
+        for (const x of pending.splice(0)) results.push({ x, ok: false, why: T('batchNotRun') });
+        return resolveAll();
+      }
+    };
+    signal?.addEventListener('abort', () => { stop = true; }, { once: true });
+    pump();
+  });
+  if (billed) send({ type: 'quota', quota: { billed, remaining: lastRemaining } });
+  const okList = results.filter((r) => r.ok);
+  const failList = results.filter((r) => !r.ok);
+  let out = T('batchDone', { ok: okList.length, n: todo.length, billed: billed.toLocaleString(), remaining: lastRemaining.toLocaleString() });
+  if (skipped) out += '\n' + T('batchSkipNote', { n: skipped });
+  out += '\n' + okList.map((r) => T('batchSavedLine', { path: r.x.rel })).join('\n');
+  if (failList.length) {
+    out += '\n\n' + T('batchFailHead', { n: failList.length }) + '\n' + failList.map((r) => `- ${r.x.rel}：${r.why}`).join('\n');
+    if (failList.some((r) => r.rejected)) out += '\n' + T('batchRejectHint');
+    else out += '\n' + T('batchRetryHint');
+  }
+  return out;
+}
+
 async function executeTool(name, args, root, signal, callId) {
   if (name === 'ask_expert') return expertTool(args, signal);
   if (!root) {
     // 纯聊天对话：生成的图片存到默认的「文稿/Shuttle」；读写文件、执行命令不可用（附件除外）
-    if (name === 'generate_image') {
+    if (name === 'generate_image' || name === 'generate_images') {
       fs.mkdirSync(defaultWorkspace(), { recursive: true });
-      return generateImage(args, defaultWorkspace(), callId);
+      return name === 'generate_images' ? generateImages(args, defaultWorkspace(), callId, signal) : generateImage(args, defaultWorkspace(), callId);
     }
     if (FOLDER_ONLY_TOOLS.has(name) || (name === 'read_file' && !attachedPath(args.path))) return T('chatNoFolderTool');
   }
   if (name === 'generate_image') return generateImage(args, root, callId);
+  if (name === 'generate_images') return generateImages(args, root, callId, signal);
   if (mcp.isMcpTool(name)) return callMcpTool(name, args, signal);
   if (isMcpAdminTool(name)) return mcpAdminTool(name, args);
   if (name === 'load_skill') return loadSkillTool(args);
