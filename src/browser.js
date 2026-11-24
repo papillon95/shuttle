@@ -5,25 +5,43 @@
 // 网页内容永远只是数据：这里不执行网页给的任何「指令」，只按 AI 的工具调用操作。
 const { WebContentsView } = require('electron');
 
+// 每个对话有自己的浏览器页面（切换对话时页面跟着切换，A 对话打开的网页不会出现在 B 对话里）。
+// 所有页面共用同一个登录分区，所以在一个对话里登录过的网站，其他对话也是登录状态。
+// AI 在后台对话里操作浏览器时，用的是那个对话自己的页面，不会挡住用户正在看的对话。
 let win = null;
-let view = null;
-let visible = false; // 面板是否打开
 let suspended = false; // 界面弹窗盖住时暂时隐藏（原生视图总在网页内容之上，会挡住弹窗）
 let bounds = { x: 0, y: 0, width: 0, height: 0 };
 let onEvent = () => {};
+let activeKeyFn = () => '__new'; // 界面当前显示的对话
+let runKeyFn = () => null; // 正在执行工具的对话（后台任务），没有就是界面当前的对话
+const MAX_VIEWS = 4; // 最多同时保留几个对话的页面，再多就关掉最久没用的（省内存）
+const slots = new Map(); // 对话 id -> { key, view, visible, issues, used }
+let sessionHooked = false;
+
+const activeKey = () => activeKeyFn() || '__new';
+/** 当前要操作的对话页面：工具调用时是发起调用的那个对话，界面操作时是当前显示的对话 */
+function S() {
+  const k = runKeyFn() || activeKey();
+  let s = slots.get(k);
+  if (!s) slots.set(k, (s = { key: k, view: null, visible: false, issues: [], used: 0 }));
+  s.used = Date.now();
+  return s;
+}
+const isActive = (s) => s.key === activeKey();
 // 当前页面的问题记录（换页时清空）：控制台报错、加载失败的资源
-let pageIssues = [];
-const addIssue = (s) => {
-  if (pageIssues.length < 40 && !pageIssues.includes(s)) pageIssues.push(s);
+const addIssue = (s, msg) => {
+  if (s.issues.length < 40 && !s.issues.includes(msg)) s.issues.push(msg);
 };
 
 function init(opts) {
   win = opts.window;
   onEvent = opts.onEvent || onEvent;
+  if (opts.activeKey) activeKeyFn = opts.activeKey;
+  if (opts.runKey) runKeyFn = opts.runKey;
 }
 
-function state() {
-  const wc = view?.webContents;
+function state(s = S()) {
+  const wc = s.view?.webContents;
   return {
     type: 'browser-state',
     url: wc ? wc.getURL() : '',
@@ -33,17 +51,20 @@ function state() {
     canForward: wc ? wc.navigationHistory.canGoForward() : false,
   };
 }
-const emit = () => onEvent(state());
+// 只把界面当前对话的页面状态发给界面
+const emit = (s) => {
+  if (isActive(s)) onEvent(state(s));
+};
 
 /** 页面里还没有打开过任何网址（新建的空视图）：这时执行脚本会一直等下去，不会返回 */
-const hasPage = () => !!view?.webContents.getURL();
+const hasPage = (s = S()) => !!s.view?.webContents.getURL();
 /**
  * 在页面里执行脚本，带超时：没打开网页、页面崩溃或卡住时报错，而不是让 AI 一直等
  * （Electron 的 executeJavaScript 在页面没加载过 / 卡住时不会返回）
  */
-function js(code, timeout = 15000) {
-  const wc = view?.webContents;
-  if (!wc || !hasPage()) return Promise.reject(Object.assign(new Error('no_page'), { code: 'no_page' }));
+function js(s, code, timeout = 15000) {
+  const wc = s.view?.webContents;
+  if (!wc || !hasPage(s)) return Promise.reject(Object.assign(new Error('no_page'), { code: 'no_page' }));
   if (wc.isCrashed()) return Promise.reject(Object.assign(new Error('page_crashed'), { code: 'page_crashed' }));
   let t;
   return Promise.race([
@@ -52,11 +73,46 @@ function js(code, timeout = 15000) {
   ]).finally(() => clearTimeout(t));
 }
 
-function ensureView() {
-  if (view) return view;
-  view = new WebContentsView({
+const slotByWc = (id) => [...slots.values()].find((x) => x.view && x.view.webContents.id === id);
+// 共用的登录分区只能挂一个监听：按页面 id 找到是哪个对话的
+function hookSession(session) {
+  if (sessionHooked) return;
+  sessionHooked = true;
+  session.webRequest.onCompleted({ urls: ['*://*/*'] }, (d) => {
+    const s = slotByWc(d.webContentsId);
+    if (s && d.statusCode >= 400 && d.resourceType !== 'mainFrame') addIssue(s, `[HTTP ${d.statusCode}] ${d.resourceType} ${d.url.slice(0, 200)}`);
+  });
+  session.webRequest.onErrorOccurred({ urls: ['file://*/*'] }, (d) => {
+    const s = slotByWc(d.webContentsId);
+    if (s) addIssue(s, `[资源加载失败] ${d.error} ${d.url.slice(0, 200)}`);
+  });
+}
+
+function destroyView(s) {
+  if (!s.view) return;
+  try {
+    win.contentView.removeChildView(s.view);
+    s.view.webContents.close();
+  } catch {}
+  s.view = null;
+  s.visible = false;
+  s.issues = [];
+}
+// 页面太多时关掉最久没用的（不关当前显示的对话和正在用的这个）
+function evict(keep) {
+  const withView = [...slots.values()].filter((x) => x.view);
+  if (withView.length < MAX_VIEWS) return;
+  const old = withView.filter((x) => x !== keep && !isActive(x)).sort((a, b) => a.used - b.used)[0];
+  if (old) destroyView(old);
+}
+
+function ensureView(s = S()) {
+  if (s.view) return s.view;
+  evict(s);
+  const view = new WebContentsView({
     webPreferences: { partition: 'persist:shuttle-browser', contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
+  s.view = view;
   const wc = view.webContents;
   // 去掉 UA 里的 Electron / Shuttle 字样，有些网站会把它当成异常浏览器
   wc.setUserAgent(wc.getUserAgent().replace(/\s*(Electron|Shuttle|shuttle)\/[\d.]+/g, ''));
@@ -65,38 +121,37 @@ function ensureView() {
     if (/^https?:/i.test(url)) wc.loadURL(url);
     return { action: 'deny' };
   });
-  for (const ev of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) wc.on(ev, emit);
+  for (const ev of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) wc.on(ev, () => emit(s));
   // 记录页面问题，读取页面时一起交给 AI，方便它检查自己做的网页对不对
   wc.on('did-start-navigation', (d) => {
-    if (d.isMainFrame && !d.isSameDocument) pageIssues = [];
+    if (d.isMainFrame && !d.isSameDocument) s.issues = [];
   });
   wc.on('console-message', (_e, level, message, line, sourceId) => {
-    if (level >= 3) addIssue(`[console.error] ${String(message).slice(0, 300)}${sourceId ? ` (${sourceId.split('/').pop()}:${line})` : ''}`);
+    if (level >= 3) addIssue(s, `[console.error] ${String(message).slice(0, 300)}${sourceId ? ` (${sourceId.split('/').pop()}:${line})` : ''}`);
   });
   wc.on('render-process-gone', (_e, d) => {
-    addIssue(`[页面崩溃] ${d?.reason || ''}`);
-    emit();
+    addIssue(s, `[页面崩溃] ${d?.reason || ''}`);
+    emit(s);
   });
   wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
-    if (code !== -3) addIssue(`[${isMainFrame ? '页面打不开' : '资源加载失败'}] ${desc} ${url}`);
+    if (code !== -3) addIssue(s, `[${isMainFrame ? '页面打不开' : '资源加载失败'}] ${desc} ${url}`);
   });
-  wc.session.webRequest.onCompleted({ urls: ['*://*/*'] }, (d) => {
-    if (d.webContentsId === wc.id && d.statusCode >= 400 && d.resourceType !== 'mainFrame') addIssue(`[HTTP ${d.statusCode}] ${d.resourceType} ${d.url.slice(0, 200)}`);
-  });
-  wc.session.webRequest.onErrorOccurred({ urls: ['file://*/*'] }, (d) => {
-    if (d.webContentsId === wc.id) addIssue(`[资源加载失败] ${d.error} ${d.url.slice(0, 200)}`);
-  });
+  hookSession(wc.session);
   view.setBackgroundColor('#ffffff');
   win.contentView.addChildView(view);
   applyBounds();
   return view;
 }
 
+// 只显示界面当前对话的页面，其他对话的页面藏起来（还在后台，AI 照样能操作）
 function applyBounds() {
-  if (!view) return;
-  const show = visible && !suspended && bounds.width > 20 && bounds.height > 20;
-  view.setVisible(show);
-  if (show) view.setBounds(bounds);
+  const ok = !suspended && bounds.width > 20 && bounds.height > 20;
+  for (const s of slots.values()) {
+    if (!s.view) continue;
+    const show = ok && s.visible && isActive(s);
+    s.view.setVisible(show);
+    if (show) s.view.setBounds(bounds);
+  }
 }
 
 /** 界面告诉我们面板占位元素的位置（CSS 像素，和窗口内容坐标一致） */
@@ -104,22 +159,51 @@ function setBounds(r) {
   bounds = { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
   applyBounds();
 }
-function setSuspended(s) {
-  suspended = !!s;
+function setSuspended(v) {
+  suspended = !!v;
   applyBounds();
 }
 function show() {
-  visible = true;
-  ensureView();
+  const s = S();
+  s.visible = true;
+  ensureView(s);
   applyBounds();
-  onEvent({ type: 'browser-show' });
-  emit();
+  if (isActive(s)) {
+    onEvent({ type: 'browser-show' });
+    emit(s);
+  }
 }
 function hide() {
-  visible = false;
+  S().visible = false;
   applyBounds();
 }
-const isOpen = () => visible;
+const isOpen = () => S().visible;
+
+/** 界面切换了对话：显示那个对话自己的页面；它没打开过浏览器就把面板收起来 */
+function refresh() {
+  applyBounds();
+  const s = slots.get(activeKey());
+  if (s?.visible && s.view) {
+    onEvent({ type: 'browser-show' });
+    onEvent(state(s));
+  } else onEvent({ type: 'browser-hide' });
+}
+/** 新对话发出第一条消息后有了 id：把它在「新对话」里打开的页面归到这个 id 下 */
+function rekey(from, to) {
+  const s = slots.get(from);
+  if (!s || slots.has(to)) return;
+  slots.delete(from);
+  s.key = to;
+  slots.set(to, s);
+}
+/** 对话删除时关掉它的页面 */
+function drop(key) {
+  const s = slots.get(key);
+  if (!s) return;
+  destroyView(s);
+  slots.delete(key);
+  refresh();
+}
 
 // ---------- 导航 ----------
 // 可选的搜索站点：AI 按内容挑（经验种草 → 小红书，观点问答 → 知乎，视频 → B站…）；
@@ -154,8 +238,8 @@ function normalizeUrl(input, lang, site) {
   return searchUrl(null, s, lang);
 }
 // 等页面加载完（最多 timeout 毫秒），再多等一会儿让脚本渲染
-function settle(timeout = 15000) {
-  const wc = view.webContents;
+function settle(s, timeout = 15000) {
+  const wc = s.view.webContents;
   return new Promise((resolve) => {
     let done = false;
     const finish = () => {
@@ -176,32 +260,35 @@ function settle(timeout = 15000) {
 }
 async function navigate(input, lang, site) {
   show();
+  const s = S();
   const url = normalizeUrl(input, lang, site);
   try {
-    await view.webContents.loadURL(url);
+    await s.view.webContents.loadURL(url);
   } catch (e) {
     // 重定向、被中断等情况 loadURL 会抛错，但页面通常已经打开了
     if (!/ERR_ABORTED/.test(e.message)) throw e;
   }
-  await settle();
+  await settle(s);
   return url;
 }
 async function back() {
-  ensureView();
-  if (!view.webContents.navigationHistory.canGoBack()) return false;
-  view.webContents.navigationHistory.goBack();
-  await settle();
+  const s = S();
+  ensureView(s);
+  if (!s.view.webContents.navigationHistory.canGoBack()) return false;
+  s.view.webContents.navigationHistory.goBack();
+  await settle(s);
   return true;
 }
 function forward() {
-  if (view?.webContents.navigationHistory.canGoForward()) view.webContents.navigationHistory.goForward();
+  const v = S().view;
+  if (v?.webContents.navigationHistory.canGoForward()) v.webContents.navigationHistory.goForward();
 }
 function reload() {
-  view?.webContents.reload();
+  S().view?.webContents.reload();
 }
 // 当前打开的本地文件（file://）路径，不是本地文件时返回 null
 function currentFile() {
-  const u = view?.webContents.getURL() || '';
+  const u = S().view?.webContents.getURL() || '';
   if (!/^file:\/\//i.test(u)) return null;
   try {
     return require('url').fileURLToPath(u.split('#')[0].split('?')[0]);
@@ -282,21 +369,24 @@ const SNAPSHOT_JS = (maxText, maxEls) => `(() => {
 })()`;
 
 async function snapshot(maxText = 6000, maxEls = 120) {
-  ensureView();
+  const s = S();
+  ensureView(s);
   try {
-    const snap = await js(SNAPSHOT_JS(maxText, maxEls));
-    snap.issues = pageIssues.slice();
+    const snap = await js(s, SNAPSHOT_JS(maxText, maxEls));
+    snap.issues = s.issues.slice();
     snap.size = { width: bounds.width, height: bounds.height };
     return snap;
   } catch (e) {
-    return { url: view.webContents.getURL(), title: view.webContents.getTitle(), text: '', elements: [], total: 0, error: e.code || e.message };
+    return { url: s.view.webContents.getURL(), title: s.view.webContents.getTitle(), text: '', elements: [], total: 0, error: e.code || e.message };
   }
 }
 
 // 元素信息：用于确认弹窗和安全判断
 async function elementInfo(id) {
-  ensureView();
+  const s = S();
+  ensureView(s);
   return js(
+    s,
     `(() => { const el = document.querySelector('[data-shuttle-id="${String(id).replace(/[^0-9]/g, '')}"]');
       if (!el) return null;
       const t = el.tagName.toLowerCase();
@@ -310,8 +400,9 @@ async function elementInfo(id) {
 }
 
 // 把元素滚到屏幕中间，返回它的中心坐标
-async function center(id) {
+async function center(s, id) {
   return js(
+    s,
     `(() => { const el = document.querySelector('[data-shuttle-id="${String(id).replace(/[^0-9]/g, '')}"]');
       if (!el) return null;
       el.scrollIntoView({ block: 'center', inline: 'center' });
@@ -324,31 +415,34 @@ async function center(id) {
 // ---------- 操作 ----------
 // 用真实的鼠标、键盘事件，前端框架（React / Vue）也能正常响应
 async function click(id) {
-  ensureView();
-  const c = await center(id);
+  const s = S();
+  ensureView(s);
+  const c = await center(s, id);
   if (!c) return false;
   await new Promise((r) => setTimeout(r, 120));
-  const wc = view.webContents;
+  const wc = s.view.webContents;
   if (c.w > 0 && c.h > 0) {
     wc.sendInputEvent({ type: 'mouseMove', x: c.x, y: c.y });
     wc.sendInputEvent({ type: 'mouseDown', x: c.x, y: c.y, button: 'left', clickCount: 1 });
     wc.sendInputEvent({ type: 'mouseUp', x: c.x, y: c.y, button: 'left', clickCount: 1 });
   } else {
-    await js(`document.querySelector('[data-shuttle-id="${String(id).replace(/[^0-9]/g, '')}"]').click()`);
+    await js(s, `document.querySelector('[data-shuttle-id="${String(id).replace(/[^0-9]/g, '')}"]').click()`);
   }
-  await settle();
+  await settle(s);
   return true;
 }
 
 async function type(id, text, { clear = true, submit = false } = {}) {
-  ensureView();
-  const c = await center(id);
+  const s = S();
+  ensureView(s);
+  const c = await center(s, id);
   if (!c) return false;
-  const wc = view.webContents;
+  const wc = s.view.webContents;
   // 先点一下获得焦点，再全选（清空原有内容）后输入
   wc.sendInputEvent({ type: 'mouseDown', x: c.x, y: c.y, button: 'left', clickCount: 1 });
   wc.sendInputEvent({ type: 'mouseUp', x: c.x, y: c.y, button: 'left', clickCount: 1 });
   await js(
+    s,
     `(() => { const el = document.querySelector('[data-shuttle-id="${String(id).replace(/[^0-9]/g, '')}"]'); if (!el) return; el.focus();
       ${clear ? `if ('value' in el && typeof el.select === 'function') el.select(); else if (el.isContentEditable) document.execCommand('selectAll');` : ''} })()`
   );
@@ -361,29 +455,32 @@ async function type(id, text, { clear = true, submit = false } = {}) {
 
 const KEYS = { enter: 'Enter', tab: 'Tab', escape: 'Escape', esc: 'Escape', backspace: 'Backspace', up: 'Up', down: 'Down', left: 'Left', right: 'Right', pagedown: 'PageDown', pageup: 'PageUp', space: 'Space', arrowup: 'Up', arrowdown: 'Down', arrowleft: 'Left', arrowright: 'Right' };
 async function press(key) {
-  ensureView();
+  const s = S();
+  ensureView(s);
   const k = KEYS[String(key).toLowerCase()] || key;
-  const wc = view.webContents;
+  const wc = s.view.webContents;
   wc.sendInputEvent({ type: 'keyDown', keyCode: k });
   if (k === 'Enter') wc.sendInputEvent({ type: 'char', keyCode: '\r' });
   wc.sendInputEvent({ type: 'keyUp', keyCode: k });
-  await settle(10000);
+  await settle(s, 10000);
   return true;
 }
 
 async function scroll(direction) {
-  ensureView();
-  await js(`window.scrollBy({ top: ${direction === 'up' ? -1 : 1} * Math.round(innerHeight * 0.8), behavior: 'instant' })`);
+  const s = S();
+  ensureView(s);
+  await js(s, `window.scrollBy({ top: ${direction === 'up' ? -1 : 1} * Math.round(innerHeight * 0.8), behavior: 'instant' })`);
   await new Promise((r) => setTimeout(r, 400));
 }
 
 // 截图（给能看图的模型用）：返回 JPEG 的 data URL，宽度缩到 1024 以内
 async function screenshot() {
-  ensureView();
-  if (!hasPage()) throw Object.assign(new Error('no_page'), { code: 'no_page' });
+  const s = S();
+  ensureView(s);
+  if (!hasPage(s)) throw Object.assign(new Error('no_page'), { code: 'no_page' });
   let t;
   const img = await Promise.race([
-    view.webContents.capturePage(),
+    s.view.webContents.capturePage(),
     new Promise((_, reject) => (t = setTimeout(() => reject(Object.assign(new Error('page_timeout'), { code: 'page_timeout' })), 15000))),
   ]).finally(() => clearTimeout(t));
   const size = img.getSize();
@@ -391,4 +488,4 @@ async function screenshot() {
   return 'data:image/jpeg;base64,' + scaled.toJPEG(70).toString('base64');
 }
 
-module.exports = { SEARCH_SITES, normalizeUrl, hasPage, currentFile, init, show, hide, isOpen, setBounds, setSuspended, navigate, back, forward, reload, snapshot, elementInfo, click, type, press, scroll, screenshot, state };
+module.exports = { SEARCH_SITES, normalizeUrl, refresh, rekey, drop, hasPage, currentFile, init, show, hide, isOpen, setBounds, setSuspended, navigate, back, forward, reload, snapshot, elementInfo, click, type, press, scroll, screenshot, state };

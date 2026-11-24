@@ -1671,6 +1671,10 @@ window.api.onEvent((evt) => {
     case 'browser-show':
       openBrowserPane();
       break;
+    case 'browser-hide':
+      // 切到了没开过浏览器的对话：只收起面板（主进程那边已经藏好了页面）
+      if (browserOpen) closeBrowserPane(true);
+      break;
     case 'browser-state':
       renderBrowserState(evt);
       break;
@@ -1737,11 +1741,11 @@ function openBrowserPane() {
     window.api.browserShow();
   });
 }
-function closeBrowserPane() {
+function closeBrowserPane(fromMain) {
   browserOpen = false;
   $('browserPane').classList.add('hidden');
   $('browserBtn').classList.remove('on');
-  window.api.browserHide();
+  if (fromMain !== true) window.api.browserHide();
 }
 function renderBrowserState(s) {
   if (document.activeElement !== $('bpUrl')) $('bpUrl').value = s.url && s.url !== 'about:blank' ? s.url : '';
@@ -1750,7 +1754,7 @@ function renderBrowserState(s) {
   $('bpLoading').classList.toggle('hidden', !s.loading);
 }
 $('browserBtn').onclick = () => (browserOpen ? closeBrowserPane() : openBrowserPane());
-$('bpClose').onclick = closeBrowserPane;
+$('bpClose').onclick = () => closeBrowserPane();
 $('bpBack').onclick = () => window.api.browserBack();
 $('bpFwd').onclick = () => window.api.browserForward();
 $('bpReload').onclick = () => window.api.browserReload();

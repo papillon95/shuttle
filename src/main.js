@@ -2832,7 +2832,13 @@ async function runAgent(input, opts = {}) {
   // opts.conv：后台任务（定时任务等）自带的对话；否则用界面当前的对话（没有就新建并设为当前）
   let c = opts.conv;
   if (!c) {
-    if (!conv || (conv.workspace || '') !== (settings.workspace || '')) conv = newConv(settings.workspace || '');
+    if (!conv || (conv.workspace || '') !== (settings.workspace || '')) {
+      const wasNew = !conv;
+      conv = newConv(settings.workspace || '');
+      // 新对话里先打开的网页归到这个对话；换了文件夹另开的对话没有网页，面板收起来
+      if (wasNew) browser.rekey('__new', conv.id);
+      browser.refresh();
+    }
     c = conv;
   }
   const msgs = c.messages;
@@ -3135,6 +3141,7 @@ function quickContinueInMain(question, answer, quote) {
   const st = loadSettings();
   saveConv();
   conv = newConv(st.workspace);
+  browser.refresh();
   const user = quote ? `${lang === 'en' ? 'Quoted text' : '引用的内容'}：\n"""\n${quote}\n"""\n\n${question || ''}` : question;
   conv.messages = [
     { role: 'system', content: systemPrompt(conv.workspace, st.customInstructions) },
@@ -3300,7 +3307,10 @@ function convArchive(id, archived) {
   writeConvFile(file, c);
   convsync.changed(c.id);
   if (conv?.id === id) {
-    if (archived) conv = null; // 归档当前对话 = 离开它，回到新对话
+    if (archived) {
+      conv = null; // 归档当前对话 = 离开它，回到新对话
+      browser.refresh();
+    }
     else delete conv.archived;
   }
   return true;
@@ -3308,6 +3318,8 @@ function convArchive(id, archived) {
 ipcMain.handle('conv:new', () => {
   // 新对话默认不关联文件夹（纯聊天）；要处理文件时再选文件夹
   conv = null;
+  browser.drop('__new'); // 上一个还没发消息的新对话里开过的网页不要带过来
+  browser.refresh();
   const s = loadSettings();
   if (s.workspace) {
     s.workspace = '';
@@ -3321,6 +3333,7 @@ ipcMain.handle('conv:open', (_e, id) => {
   if (!r) flushConvs(id);
   const c = r ? r.conv : JSON.parse(fs.readFileSync(path.join(CONV_DIR(), String(id).replace(/[^a-z0-9]/gi, '') + '.json'), 'utf8'));
   conv = c;
+  browser.refresh(); // 浏览器面板换成这个对话自己的页面（没开过就收起来）
   if (r) return { ...c, running: true, partial: r.partial, pendingConfirms: [...confirmConv].filter(([, cid]) => cid === id).map(([cid]) => cid) };
   const s = loadSettings();
   if (!c.workspace && s.workspace) {
@@ -3362,6 +3375,7 @@ function convDelete(id) {
   dropPendingConv(id);
   fs.rmSync(path.join(CONV_DIR(), id + '.json'), { force: true });
   if (conv?.id === id) conv = null;
+  browser.drop(id); // 关掉这个对话的网页
   convsync.removed([id]);
   return true;
 }
@@ -4520,7 +4534,8 @@ app.whenReady().then(() => {
     });
   }
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  browser.init({ window: win, onEvent: send });
+  // 每个对话有自己的浏览器页面：界面当前对话 / 正在执行工具的对话（后台任务）各用各的
+  browser.init({ window: win, onEvent: send, activeKey: () => conv?.id || '__new', runKey: () => runCtx.getStore()?.conv?.id });
   screenshot.init({
     window: win,
     onCaptured: (dataUrl) => send({ type: 'screenshot', dataUrl }),
