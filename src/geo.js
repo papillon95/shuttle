@@ -254,8 +254,8 @@ function textSummary(res, zh = true) {
   if (res.skipped?.length) L.push((zh ? '\n跳过的模型：' : '\nSkipped: ') + res.skipped.map((x) => `${x.name}（${x.why === 'plan' ? (zh ? '需要更高会员' : 'plan') : zh ? '平台没有' : 'n/a'}）`).join('、'));
   L.push((zh ? '\n完整报告（每条原始回答都在里面）：' : '\nFull report: ') + path.relative(path.dirname(path.dirname(res.projDir)), res.reportFile));
   L.push(zh
-    ? '\n请用通俗的话向用户解读：哪些模型、哪些问题下品牌表现好或差，AI 更常推荐谁，AI 引用了哪些来源；再给 3～5 条具体可做的建议（该在哪些平台发什么样的真实内容、官网要补什么信息），提醒不要发虚假测评。说明这是通过接口直接问模型的结果，和 App 里打开联网搜索时的回答可能不同。最后问用户要不要设成定期监测（用 project 参数即可重复跑同一组问题）。'
-    : '\nExplain the results plainly, give 3-5 concrete content suggestions (no fake reviews), note that API answers may differ from the apps with web search, and offer to schedule recurring checks (pass project to rerun).');
+    ? '\n请用通俗的话向用户解读：哪些模型、哪些问题下品牌表现好或差，AI 更常推荐谁，AI 引用了哪些来源；再给 3～5 条具体可做的建议（该在哪些平台发什么样的真实内容、官网要补什么信息），提醒不要发虚假测评。说明这是通过接口直接问模型的结果，和 App 里打开联网搜索时的回答可能不同。最后问用户：要不要用 geo_content 按提及率低的问题生成可发布的内容（需要先向用户要品牌真实信息），以及要不要设成定期监测（用 project 参数即可重复跑同一组问题）。'
+    : '\nExplain the results plainly, give 3-5 concrete content suggestions (no fake reviews), note that API answers may differ from the apps with web search, offer geo_content to draft publishable content for weak questions (ask for real brand facts first), and offer to schedule recurring checks (pass project to rerun).');
   return L.join('\n');
 }
 

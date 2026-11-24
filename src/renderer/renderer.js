@@ -254,7 +254,7 @@ function toolSummary(name, a) {
   if (name === 'run_command') return a.command;
   if (name === 'generate_image') return a.prompt;
   if (name === 'generate_images') return T('batchToolSummary', { n: (a.items || []).length });
-  if (name === 'ai_visibility') return a.brand || a.project || '';
+  if (name === 'ai_visibility' || name === 'geo_content') return a.brand || a.project || '';
   if (name === 'ask_expert') return (a.expert ? a.expert + ' · ' : '') + (a.question || '');
   return a.path || '';
 }

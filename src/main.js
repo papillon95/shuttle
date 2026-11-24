@@ -8,6 +8,7 @@ const fs = require('fs');
 const BUILTIN_PROVIDERS = require('./providers');
 const tools = require('./tools');
 const geo = require('./geo');
+const geoContent = require('./geo-content');
 const docs = require('./docs');
 const updater = require('./updater');
 const mcp = require('./mcp');
@@ -980,6 +981,32 @@ const GEO_TOOL = {
     },
   },
 };
+// GEO 内容生成：按监测结果和品牌真实信息，为各平台写文章 + 官网 FAQ / 结构化数据 / llms.txt（见 geo-content.js）
+const GEO_CONTENT_TOOL = {
+  type: 'function',
+  function: {
+    name: 'geo_content',
+    description:
+      '为 GEO（让 AI 搜索推荐品牌）生成可发布的内容：针对潜在客户常问的问题，按品牌真实信息写知乎回答、百家号 / 头条文章、小红书笔记，并生成官网 FAQ 页（含 schema.org 结构化数据）和 llms.txt，存到本地 ai-visibility/<项目>/content/ 并打开汇总页。只生成不发布。' +
+      '用户想「让 AI 推荐我们」「往 AI 里投喂信息」「做 GEO 优化 / 铺内容」时用；最好先用 ai_visibility 监测过，不传 questions 时会自动挑监测里 AI 提及率最低的问题。' +
+      '必须先向用户问清楚品牌的真实信息（做什么、产品 / 服务、面向谁、城市和地址、价格区间、和别家的区别、可公开的资质或数据、联系方式），把用户的原话作为 facts 传入（可以理顺语句、分段，但绝不能补充、推测或润色出用户没说过的卖点、优势、数据，比如「老师稳定」「交通方便」「可参加某某赛事」都不能自己加；缺什么就问用户，或者留给文章里的【待补充】）。facts 会保存到项目，下次可省略。工具会弹窗让用户确认（弹窗里会显示 facts）。只生成到本地，不会发布，不要对用户说「发布到」某平台。',
+    parameters: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: '项目名（和 ai_visibility 的一致，默认用品牌名）' },
+        brand: { type: 'string', description: '品牌名；项目已存在时可省略' },
+        aliases: { type: 'array', items: { type: 'string' }, description: '别名、简称' },
+        facts: { type: 'string', description: '品牌真实信息：用户的原话（可理顺分段，不得添加用户没说过的内容）；项目里保存过可省略' },
+        website: { type: 'string', description: '官网地址（可选）' },
+        questions: { type: 'array', items: { type: 'string' }, description: '要写的问题；不传就用最近一次监测里提及率最低的' },
+        limit: { type: 'integer', description: '最多写几个问题，默认 8，最多 20' },
+        platforms: { type: 'array', items: { type: 'string', enum: Object.keys(geoContent.PLATFORMS) }, description: `发布平台，默认 ${geoContent.DEFAULT_PLATFORMS.join('、')}` },
+        site: { type: 'boolean', description: '是否生成官网 FAQ / 结构化数据 / llms.txt，默认 true' },
+        model: { type: 'string', description: '写作模型简称，默认 deepseek' },
+      },
+    },
+  },
+};
 // ---------- 外援：调用电脑上装好的 AI 命令行工具（见 experts.js） ----------
 // settings.experts：{ [id]: { enabled, path } }（内置工具的开关、手动指定的路径）
 // settings.expertsCustom：用户添加的其他工具 [{ id, name, path, args, output, jsonField, readOnly }]
@@ -1443,7 +1470,7 @@ function toolDefinitions(settings, c) {
 }
 function toolDefinitionsAll(settings) {
   // 生图始终走平台（扣会员额度），和对话用的是平台模型还是自己的 Key 无关
-  const base = [...tools.definitions, ...(currentUser && imageModels().length ? [IMAGE_TOOL, IMAGE_BATCH_TOOL] : []), ...(currentUser ? [GEO_TOOL] : [])];
+  const base = [...tools.definitions, ...(currentUser && imageModels().length ? [IMAGE_TOOL, IMAGE_BATCH_TOOL] : []), ...(currentUser ? [GEO_TOOL, GEO_CONTENT_TOOL] : [])];
   const expertTool = settings.expertAuto !== false && expertsAvail.length ? [expertToolDef()] : [];
   return [...base, ...expertTool, ...BROWSER_TOOLS, SCHEDULE_TOOL, ...MCP_ADMIN_TOOLS, ...(hasEnabledSkills() ? [SKILL_TOOL] : []), ...(mcp.lazyServers().length ? MCP_LAZY_TOOLS : []), ...mcp.toolDefinitions()];
 }
@@ -2283,13 +2310,32 @@ async function aiVisibility(args, root, signal) {
   return geo.textSummary(res, lang !== 'en') + (await autoPreview(res.reportFile));
 }
 
+async function geoContentTool(args, root, signal) {
+  if (!currentUser) return T('imageNeedsPlatform');
+  const q = await api('/aidesk/billing/quota', { token: token() });
+  const level = q.ok ? Number(q.data.level || 0) : 0;
+  const res = await geoContent.run(args || {}, root, {
+    platformModels: platformModels(),
+    level,
+    scheduled: !!runCtx.getStore()?.conv?.scheduleId,
+    lang,
+    signal,
+    ask: (model, messages, maxTokens) => platformAsk(model, messages, maxTokens, signal),
+    confirm: ({ title, body }) => askConfirm({ tool: 'geo_content', title, command: body }),
+    progress: (text) => send({ type: 'status', text }),
+  });
+  if (res.rejected) return T('geoContentRejected');
+  if (res.error) return T('errorPrefix') + res.error;
+  return geoContent.textSummary(res, lang !== 'en') + (await autoPreview(res.indexFile));
+}
+
 async function executeTool(name, args, root, signal, callId) {
   if (name === 'ask_expert') return expertTool(args, signal);
   if (!root) {
     // 纯聊天对话：生成的图片存到默认的「文稿/Shuttle」；读写文件、执行命令不可用（附件除外）
-    if (name === 'ai_visibility') {
+    if (name === 'ai_visibility' || name === 'geo_content') {
       fs.mkdirSync(defaultWorkspace(), { recursive: true });
-      return aiVisibility(args, defaultWorkspace(), signal);
+      return name === 'geo_content' ? geoContentTool(args, defaultWorkspace(), signal) : aiVisibility(args, defaultWorkspace(), signal);
     }
     if (name === 'generate_image' || name === 'generate_images') {
       fs.mkdirSync(defaultWorkspace(), { recursive: true });
@@ -2300,6 +2346,7 @@ async function executeTool(name, args, root, signal, callId) {
   if (name === 'generate_image') return generateImage(args, root, callId);
   if (name === 'generate_images') return generateImages(args, root, callId, signal);
   if (name === 'ai_visibility') return aiVisibility(args, root, signal);
+  if (name === 'geo_content') return geoContentTool(args, root, signal);
   if (mcp.isMcpTool(name)) return callMcpTool(name, args, signal);
   if (isMcpAdminTool(name)) return mcpAdminTool(name, args);
   if (name === 'load_skill') return loadSkillTool(args);
