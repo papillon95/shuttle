@@ -217,10 +217,15 @@ function summarize(d) {
       errors: d.answers.filter((a) => a.model === m.value && a.error).length,
     };
   });
+  // 问题里本身带了品牌名的（「XX 怎么样」）一定会提到品牌，单独算，不计入总提及率
+  const names = [d.brand, ...(d.aliases || [])];
   const byQuestion = d.questions.map((q) => {
     const as = valid.filter((a) => a.question === q);
-    return { question: q, rate: pct(as.filter((a) => a.mentioned).length, as.length) };
+    return { question: q, rate: pct(as.filter((a) => a.mentioned).length, as.length), brandQ: findName(q, names) >= 0 };
   });
+  const isBrandQ = new Set(byQuestion.filter((q) => q.brandQ).map((q) => q.question));
+  const generic = valid.filter((a) => !isBrandQ.has(a.question));
+  const rateBase = generic.length ? generic : valid;
   // 被推荐最多的名字（看看 AI 把客户推给了谁）
   const count = new Map();
   for (const a of valid) for (const n of new Set((a.recommended || []).map((x) => x.trim()).filter(Boolean))) count.set(n, (count.get(n) || 0) + 1);
@@ -232,7 +237,21 @@ function summarize(d) {
   const hits = valid.filter((a) => a.mentioned);
   const sent = { positive: hits.filter((a) => a.sentiment === 'positive').length, neutral: hits.filter((a) => a.sentiment === 'neutral').length, negative: hits.filter((a) => a.sentiment === 'negative').length };
   const descriptions = [...new Set(hits.map((a) => a.summary).filter(Boolean))].slice(0, 8);
-  return { total: valid.length, errors: d.answers.length - valid.length, mentioned: hits.length, rate: pct(hits.length, valid.length), byModel, byQuestion, topRecommended, competitors: comp, sources, sentiment: sent, descriptions };
+  if (isBrandQ.size && generic.length) for (const m of byModel) {
+    const as = generic.filter((a) => d.models.find((x) => x.label === m.model)?.value === a.model);
+    const hit = as.filter((a) => a.mentioned);
+    const ranked = hit.filter((a) => a.position > 0);
+    Object.assign(m, { total: as.length, mentioned: hit.length, rate: pct(hit.length, as.length),
+      avgPos: ranked.length ? +(ranked.reduce((x, a) => x + a.position, 0) / ranked.length).toFixed(1) : null, top3: pct(ranked.filter((a) => a.position <= 3).length, as.length) });
+  }
+  const brandHits = valid.filter((a) => isBrandQ.has(a.question) && a.mentioned);
+  const brandQs = isBrandQ.size ? {
+    count: isBrandQ.size,
+    answers: valid.filter((a) => isBrandQ.has(a.question)).length,
+    sentiment: { positive: brandHits.filter((a) => a.sentiment === 'positive').length, neutral: brandHits.filter((a) => a.sentiment === 'neutral').length, negative: brandHits.filter((a) => a.sentiment === 'negative').length },
+    descriptions: [...new Set(brandHits.map((a) => a.summary).filter(Boolean))].slice(0, 8),
+  } : null;
+  return { total: valid.length, errors: d.answers.length - valid.length, mentioned: hits.length, rate: pct(rateBase.filter((a) => a.mentioned).length, rateBase.length), rateTotal: rateBase.length, brandQs, byModel, byQuestion, topRecommended, competitors: comp, sources, sentiment: sent, descriptions };
 }
 
 /** 给模型看的文字摘要 */
@@ -240,11 +259,17 @@ function textSummary(res, zh = true) {
   const d = res.runData;
   const s = d.summary;
   const L = [];
-  L.push(zh ? `AI 可见度监测「${d.brand}」完成（${d.stamp}）：有效回答 ${s.total} 条${s.errors ? `，失败 ${s.errors} 条` : ''}，提到品牌 ${s.mentioned} 条，总提及率 ${s.rate}%。` : `AI visibility check for "${d.brand}" done: ${s.total} answers, mention rate ${s.rate}%.`);
+  L.push(zh ? `AI 可见度监测「${d.brand}」完成（${d.stamp}）：有效回答 ${s.total} 条${s.errors ? `，失败 ${s.errors} 条` : ''}，提到品牌 ${s.mentioned} 条；${s.brandQs ? '不带品牌名的问题里' : ''}AI 主动提到品牌的比例（提及率）${s.rate}%。` : `AI visibility check for "${d.brand}" done: ${s.total} answers, mention rate ${s.rate}%${s.brandQs ? ' (questions without the brand name)' : ''}.`);
+  if (s.brandQs) {
+    const b = s.brandQs;
+    L.push(zh
+      ? `直接问品牌的问题 ${b.count} 个（${b.answers} 条回答，不计入提及率）：态度 正面 ${b.sentiment.positive}、中性 ${b.sentiment.neutral}、负面 ${b.sentiment.negative}${b.descriptions.length ? '；AI 这样介绍它：' + b.descriptions.map((x) => `「${x}」`).join(' ') : ''}`
+      : `Brand-name questions: ${b.count} (${b.answers} answers, excluded from the mention rate); sentiment +${b.sentiment.positive} =${b.sentiment.neutral} -${b.sentiment.negative}${b.descriptions.length ? '; AI describes it as: ' + b.descriptions.join(' | ') : ''}`);
+  }
   L.push(zh ? '\n各模型：' : '\nBy model:');
   for (const m of s.byModel) L.push(`- ${m.model}：${zh ? '提及率' : 'mention'} ${m.rate}%（${m.mentioned}/${m.total}）${m.avgPos ? (zh ? `，平均排第 ${m.avgPos}，前三 ${m.top3}%` : `, avg #${m.avgPos}`) : ''}${m.errors ? (zh ? `，失败 ${m.errors}` : `, ${m.errors} failed`) : ''}`);
   L.push(zh ? '\n各问题提及率：' : '\nBy question:');
-  for (const q of s.byQuestion) L.push(`- ${q.rate}%  ${q.question}`);
+  for (const q of s.byQuestion) L.push(`- ${q.brandQ ? (zh ? '（品牌词）' : '(brand) ') : q.rate + '%  '}${q.question}`);
   if (s.competitors.length) L.push((zh ? '\n竞品出现率：' : '\nCompetitors: ') + s.competitors.map((c) => `${c.name} ${c.rate}%`).join('，'));
   if (s.topRecommended.length) L.push((zh ? '\nAI 推荐最多的名字：' : '\nMost recommended: ') + s.topRecommended.slice(0, 10).map((r) => `${r.name}（${r.n}）`).join('，'));
   if (s.mentioned) L.push((zh ? `\n对品牌的态度：正面 ${s.sentiment.positive}，中性 ${s.sentiment.neutral}，负面 ${s.sentiment.negative}` : `\nSentiment: +${s.sentiment.positive} =${s.sentiment.neutral} -${s.sentiment.negative}`));
@@ -312,7 +337,7 @@ pre{white-space:pre-wrap;word-break:break-word;font:12.5px/1.55 inherit;backgrou
 ${history.length > 1 ? `<div class="card"><h2>${t.trend}</h2>${trendSvg(history)}</div>` : ''}
 <div class="card"><h2>${t.byModel}</h2><table><tr><th>${t.model}</th><th>${t.mention}</th><th>${t.avg}</th><th>${t.top3}</th></tr>
 ${s.byModel.map((m) => `<tr><td>${esc(m.model)}</td><td>${bar(m.rate)}</td><td>${m.avgPos ?? '—'}</td><td>${m.top3}%</td></tr>`).join('')}</table></div>
-<div class="card"><h2>${t.byQ}</h2><table>${s.byQuestion.map((q) => `<tr><td>${esc(q.question)}</td><td style="width:200px">${bar(q.rate)}</td></tr>`).join('')}</table></div>
+<div class="card"><h2>${t.byQ}</h2><table>${s.byQuestion.map((q) => `<tr><td>${esc(q.question)}${q.brandQ ? ` <span class="tag">${zh ? '品牌词，不计入提及率' : 'brand name, excluded'}</span>` : ''}</td><td style="width:200px">${bar(q.rate, q.brandQ ? 'var(--muted)' : undefined)}</td></tr>`).join('')}</table></div>
 ${s.competitors.length ? `<div class="card"><h2>${t.comp}</h2><table><tr><td>${esc(d.brand)}</td><td style="width:240px">${bar(s.rate)}</td></tr>${s.competitors.map((c) => `<tr><td>${esc(c.name)}</td><td>${bar(c.rate, 'var(--muted)')}</td></tr>`).join('')}</table></div>` : ''}
 <div class="card"><h2>${t.rec}</h2><div class="chips">${s.topRecommended.length ? s.topRecommended.map((r) => `<span>${esc(r.name)} · ${r.n}</span>`).join('') : t.none}</div></div>
 ${s.descriptions.length ? `<div class="card"><h2>${t.desc}</h2><ul>${s.descriptions.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}

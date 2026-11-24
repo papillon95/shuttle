@@ -11,6 +11,7 @@ const PLATFORMS = {
   baijiahao: { zh: '百家号文章', en: 'Baijiahao article', words: '1000～1500 字', note: '文心一言（百度）常引用' },
   toutiao: { zh: '头条文章', en: 'Toutiao article', words: '1000～1500 字', note: '豆包常引用头条、抖音' },
   xiaohongshu: { zh: '小红书笔记', en: 'Xiaohongshu note', words: '400～700 字', note: '年轻用户搜索多，豆包、千问也会引用' },
+  news: { zh: '媒体新闻稿', en: 'Press release', words: '800～1200 字', note: '发到新浪、搜狐、网易、地方门户等新闻网站（一般要通过付费的新闻稿发布渠道），AI 联网搜品牌名时常引用' },
 };
 const DEFAULT_PLATFORMS = ['zhihu', 'baijiahao', 'xiaohongshu'];
 const MAX_ARTICLES = 40;
@@ -45,9 +46,10 @@ const ARTICLE_PROMPT = (c, platform, question) => {
     zhihu: `以知乎回答的形式写，标题就是这个问题本身。先用两三句话直接给结论，再分点展开判断标准和选择建议，${c.brand}作为其中一个具体选项给出理由。语气专业、客观。`,
     baijiahao: '写一篇百家号攻略 / 科普文章。标题包含问题里的关键词（可以改写得更像文章标题），开头一段总结要点，正文用小标题分段。',
     toutiao: '写一篇头条文章。标题包含问题里的关键词，口语化、信息密度高，用小标题分段，结尾有简短总结。',
+    news: `写一篇可以投给新闻网站的媒体新闻稿，第三人称、客观陈述。结构：标题（陈述事实，包含品牌名）；导语（一段话交代谁、在哪、做了什么）；正文用两三个小标题展开，内容要能回答上面这个问题；最后一段是「关于${c.brand}」的品牌简介，再列出【待补充：媒体联系人及电话】。新闻稿要有由头：只能用品牌真实信息里提到的真实事件（如开业、新校区、新课程、活动、获奖）；没有事件就写成品牌介绍或行业观察类稿件，绝不能虚构事件、日期、合作方、领导讲话。不要编造任何人的引语，需要引语的地方写【待补充：负责人引语】。不要用「据悉」「记者了解到」这类假装是记者采访的说法。`,
     xiaohongshu: '写一篇小红书笔记。标题不超过 20 个字，可以带一两个 emoji；正文分短段、要点清晰，可适量用 emoji；最后一行写 5～8 个话题标签（#xxx）。用品牌方或科普博主的口吻，不要伪装成消费者。',
   }[platform];
-  return `请为「${c.brand}」写一篇用于发布在${p.zh.replace(/回答|文章|笔记/, '')}的内容，回答这个用户常问的问题：
+  return `请为「${c.brand}」写一篇用于发布在${platform === 'news' ? '新闻网站' : p.zh.replace(/回答|文章|笔记/, '')}的内容，回答这个用户常问的问题：
 
 问题：${question}
 
@@ -153,8 +155,10 @@ async function run(args, root, deps) {
   let fromRun = false;
   if (!questions.length && last?.summary?.byQuestion?.length) {
     const sorted = [...last.summary.byQuestion].sort((a, b) => a.rate - b.rate);
-    const weak = sorted.filter((q) => q.rate < 60);
-    questions = (weak.length ? weak : sorted).map((q) => q.question);
+    // 直接问品牌的问题（「XX 怎么样」）一定会提到品牌，看的是 AI 怎么说，所以总是带上；其余挑提及率低的
+    const brandQs = sorted.filter((q) => q.brandQ);
+    const weak = sorted.filter((q) => !q.brandQ && q.rate < 60);
+    questions = [...brandQs, ...(weak.length || brandQs.length ? weak : sorted)].map((q) => q.question);
     fromRun = true;
   }
   if (!questions.length && Array.isArray(saved.questions)) questions = saved.questions;
@@ -177,14 +181,14 @@ async function run(args, root, deps) {
     aiDescriptions: (last?.summary?.descriptions || []).slice(0, 4),
   };
   const mult = model.multiplier || 1;
-  const estTokens = Math.round((platforms.reduce((s, p) => s + (p === 'xiaohongshu' ? 2200 : 4000), 0) * questions.length + (withSite ? 1500 + questions.length * 400 : 0)) * mult);
+  const estTokens = Math.round((platforms.reduce((s, p) => s + (p === 'xiaohongshu' ? 2200 : p === 'news' ? 3200 : 4000), 0) * questions.length + (withSite ? 1500 + questions.length * 400 : 0)) * mult);
   if (!deps.scheduled) {
     const ok = await deps.confirm({
       title: zh
         ? `GEO 内容生成「${brand}」：${questions.length} 个问题 × ${platforms.length} 个平台 = ${total} 篇${withSite ? ' + 官网 FAQ' : ''}，预计约 ${(estTokens / 10000).toFixed(1)} 万 token`
         : `GEO content for "${brand}": ${total} articles${withSite ? ' + site FAQ' : ''}, about ${(estTokens / 1000).toFixed(0)}K tokens`,
       body: (zh ? '写作模型：' : 'Model: ') + model.label + (zh ? '\n平台：' : '\nPlatforms: ') + platforms.map((p) => PLATFORMS[p][zh ? 'zh' : 'en']).join('、') +
-        (fromRun ? (zh ? '\n（问题取自最近一次监测里 AI 提及率最低的）' : '\n(questions with the lowest mention rate in the last check)') : '') +
+        (fromRun ? (zh ? '\n（问题取自最近一次监测：直接问品牌的问题，加上 AI 提及率低的问题）' : '\n(questions with the lowest mention rate in the last check)') : '') +
         '\n\n' + questions.map((q, i) => `${i + 1}. ${q}`).join('\n') +
         (zh ? '\n\n依据的品牌信息（文章只会用这些，有不对或多出来的请取消后更正）：\n' : '\n\nBrand facts used (cancel and correct if anything is wrong):\n') + facts +
         (zh ? '\n\n只生成到本地，不会替你发布。' : '\n\nContent is saved locally only; nothing is published.'),
@@ -207,7 +211,7 @@ async function run(args, root, deps) {
   let done = 0;
   const steps = total + (withSite ? 1 : 0);
   await pool(tasks, 2, async (t) => {
-    const r = await deps.ask(model.value, [{ role: 'user', content: ARTICLE_PROMPT(c, t.p, t.q) }], t.p === 'xiaohongshu' ? 1500 : 3000);
+    const r = await deps.ask(model.value, [{ role: 'user', content: ARTICLE_PROMPT(c, t.p, t.q) }], t.p === 'xiaohongshu' ? 1500 : t.p === 'news' ? 2400 : 3000);
     done++;
     deps.progress(zh ? `正在写内容 ${done}/${steps}…` : `Writing ${done}/${steps}…`);
     if (r.error || !r.text) {
@@ -292,7 +296,7 @@ function textSummary(res, zh = true) {
   if (todo.length) L.push(`\n文中有 ${todo.length} 处需要品牌方补充的信息：` + todo.slice(0, 12).join(' '));
   L.push('\n请向用户简要说明：');
   L.push('1. 发布前逐篇看一遍，把【待补充】填上真实信息，删掉不准确的内容；');
-  L.push('2. 用自己的账号发布：知乎（DeepSeek、千问、Kimi 联网常引用）、百家号（文心常引用）、头条 / 抖音（豆包常引用）、小红书；同一篇不要在同一平台重复发，也不要批量注册账号刷内容；');
+  L.push('2. 用自己的账号发布：知乎（DeepSeek、千问、Kimi 联网常引用）、百家号（文心常引用）、头条 / 抖音（豆包常引用）、小红书；新闻稿要通过新闻稿发布渠道发到新闻网站（一般收费），发之前确认里面的事实都属实；同一篇不要在同一平台重复发，也不要批量注册账号刷内容；');
   L.push('3. 官网：把 faq.html 的内容和里面的 JSON-LD 结构化数据放到官网的常见问题页，llms.txt 放到网站根目录；');
   L.push('4. 不要发虚假测评或冒充用户的好评；');
   L.push(`5. 发布后 2～4 周，用 ai_visibility（传 project「${path.basename(res.projDir)}」）再测一次，对比提及率变化。${res.hasRun ? '' : '这个项目还没做过监测，建议现在先测一次作为基线。'}`);
@@ -321,7 +325,7 @@ main{max-width:920px;margin:0 auto}h1{font-size:22px;margin:0 0 2px}h2{font-size
 .btns{margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}button{border:1px solid var(--border);background:var(--bg);color:var(--text);border-radius:8px;padding:3px 10px;cursor:pointer;font:inherit;font-size:12px}button.done{color:var(--accent);border-color:var(--accent)}.file{color:var(--muted);font-size:12px}
 pre{white-space:pre-wrap;word-break:break-word;font:13px/1.65 inherit;background:var(--bg);border-radius:8px;padding:10px 12px;max-height:420px;overflow:auto;margin:0}mark{background:var(--mark);color:inherit;border-radius:3px}
 </style></head><body><main>
-<h1>${esc(res.brand)} · GEO 内容</h1><div class="sub">${esc(res.stamp)} · ${ok.length} 篇 · ${esc(res.model)} 生成${res.fromRun ? ' · 问题取自最近一次监测里 AI 提及率最低的' : ''}</div>
+<h1>${esc(res.brand)} · GEO 内容</h1><div class="sub">${esc(res.stamp)} · ${ok.length} 篇 · ${esc(res.model)} 生成${res.fromRun ? ' · 问题取自最近一次监测（品牌词问题 + AI 提及率低的问题）' : ''}</div>
 <div class="tips"><b>怎么用</b><ol>
 <li>逐篇检查，把<mark>【待补充】</mark>填成真实信息，删掉不准确的地方。</li>
 <li>用自己的账号发布，同一篇别在同一平台重复发：<ul>${tips}</ul></li>
