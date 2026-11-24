@@ -167,7 +167,12 @@ function getProviders() {
     };
   }
   // 服务器目录里还没配的内置服务商（如 OpenRouter）也显示；后台配了就以后台为准
+  // 后台只配了平台用的免费模型时，「我的 Key」里仍要有内置的付费模型（Gemini、Claude、GPT）
   if (!out.openrouter) out.openrouter = BUILTIN_PROVIDERS.openrouter;
+  else {
+    const have = new Set(out.openrouter.models.map((m) => m.id));
+    out.openrouter.models.push(...BUILTIN_PROVIDERS.openrouter.models.filter((m) => !have.has(m.id)));
+  }
   out.custom = BUILTIN_PROVIDERS.custom;
   return out;
 }
@@ -189,7 +194,7 @@ function platformModels() {
   for (const p of catalogCache) {
     for (const m of p.models) {
       out.push({ value: `${p.code}:${m.id}`, provider: p.code, name: p.name, nameEn: p.nameEn, label: m.label, labelEn: m.labelEn,
-        minPlanLevel: m.minPlanLevel || 0, multiplier: m.multiplier || 1, supportsVision: !!m.supportsVision, contextWindow: m.contextWindow || 0 });
+        minPlanLevel: m.minPlanLevel || 0, multiplier: m.multiplier ?? 1, supportsVision: !!m.supportsVision, contextWindow: m.contextWindow || 0 });
     }
   }
   return out;
