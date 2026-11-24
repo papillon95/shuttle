@@ -2861,6 +2861,7 @@ async function openPlans(reason, requiredLevel) {
     plansPromo = r.data.promo || null;
   }
   payChannels = ch.ok ? ch.data.channels || [] : [];
+  payManual = ch.ok ? ch.data.manual || {} : {};
   renderPlans();
   loadOrders();
 }
@@ -2890,6 +2891,7 @@ document.querySelectorAll('.period-switch button').forEach((b) => (b.onclick = (
 $('planClose').onclick = () => $('planModal').classList.add('hidden');
 
 let payChannels = []; // 服务端开放的支付方式；空 = 还没接在线支付，走「联系客服付款」
+let payManual = {}; // 联系客服付款时显示的内容：{wechat 客服微信号, qr 客服二维码, payQr 收款码, note 说明}（管理后台参数设置里配）
 async function createOrder(planCode) {
   const r = await window.api.call('POST', '/aidesk/billing/orders', { planCode, units: 1 });
   const box = $('orderBox');
@@ -2897,8 +2899,23 @@ async function createOrder(planCode) {
   const o = r.data.order;
   loadOrders();
   if (payChannels.includes('wechat')) return payOrder(o.orderNo);
+  showManualPay(o, true);
+}
+// 还没接在线支付：显示订单号（可复制）、收款码、客服微信，让用户转账时备注订单号，客服确认收款后开通
+function showManualPay(o, justCreated) {
+  const box = $('orderBox');
   box.classList.remove('hidden');
-  box.innerHTML = `<b>${esc(T('orderCreated'))}</b><br>${esc(T('orderInfo', { no: o.orderNo, plan: o.planName, amount: yuan(o.amountCents) }))}<br><span class="hint">${esc(T('payPending'))}</span>`;
+  const m = payManual || {};
+  const img = (src, label) => (/^https?:\/\//.test(src || '') ? `<figure class="pay-img"><img src="${esc(src)}" alt=""><figcaption>${esc(label)}</figcaption></figure>` : '');
+  const imgs = img(m.payQr, T('manualPayQr')) + img(m.qr, T('manualSupportQr'));
+  box.innerHTML = `<b>${esc(T(justCreated ? 'orderCreated' : 'manualPayTitle'))}</b>
+    <div class="manual-row">${esc(T('orderInfo', { no: o.orderNo, plan: o.planName || '', amount: yuan(o.amountCents) }))} <button class="ghost small" data-copy="${esc(o.orderNo)}">${esc(T('copyOrderNo'))}</button></div>
+    ${imgs ? `<div class="pay-imgs">${imgs}</div>` : ''}
+    ${m.wechat ? `<div class="manual-row">${esc(T('manualSupportWechat', { id: m.wechat }))} <button class="ghost small" data-copy="${esc(m.wechat)}">${esc(T('copy'))}</button></div>` : ''}
+    <div class="hint">${esc(m.note || (m.wechat || imgs ? T('manualPayNote') : T('payPending')))}</div>`;
+  box.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); showToast(T('copied'), 'info'); } catch {}
+  }));
 }
 
 // ---------- 微信扫码付款：显示二维码，每 2 秒查一次订单，付了就开通 ----------
@@ -2964,9 +2981,11 @@ async function loadOrders() {
   if (!r.ok) return;
   const canPay = (o) => o.status === 'pending' && payChannels.includes('wechat') && Date.now() - new Date(String(o.createTime).replace(' ', 'T') + '+08:00').getTime() < 29 * 60000;
   $('orderList').innerHTML = r.data.orders.length
-    ? `<table class="tbl">${r.data.orders.map((o) => `<tr><td>${esc(o.orderNo)}</td><td>${esc(o.planName || '')}</td><td class="num">¥${yuan(o.amountCents)}</td><td>${canPay(o) ? `<button class="ghost small" data-pay="${esc(o.orderNo)}">${esc(T('payNow'))}</button>` : esc(T('orderStatus_' + o.status))}</td><td>${esc(o.createTime || '')}</td></tr>`).join('')}</table>`
+    ? `<table class="tbl">${r.data.orders.map((o, i) => `<tr><td>${esc(o.orderNo)}</td><td>${esc(o.planName || '')}</td><td class="num">¥${yuan(o.amountCents)}</td><td>${canPay(o) ? `<button class="ghost small" data-pay="${esc(o.orderNo)}">${esc(T('payNow'))}</button>` : o.status === 'pending' && !payChannels.includes('wechat') ? `<button class="ghost small" data-manual="${i}">${esc(T('manualPayHow'))}</button>` : esc(T('orderStatus_' + o.status))}</td><td>${esc(o.createTime || '')}</td></tr>`).join('')}</table>`
     : `<div class="hint">${esc(T('noOrders'))}</div>`;
   $('orderList').querySelectorAll('[data-pay]').forEach((b) => (b.onclick = () => payOrder(b.dataset.pay)));
+  // 待人工确认收款的订单：点「怎么付款」再看一次订单号、收款码和客服
+  $('orderList').querySelectorAll('[data-manual]').forEach((b) => (b.onclick = () => showManualPay(r.data.orders[Number(b.dataset.manual)], false)));
 }
 
 // ---------- 关于 / 检查更新 ----------
