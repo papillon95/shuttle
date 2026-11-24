@@ -3394,6 +3394,10 @@ ipcMain.handle('settings:test', async (_e, pid, override) => {
       })
     );
     const text = await res.text();
+    // 429/503 但不是额度用完：Key 是好的，只是模型这会儿太忙（免费模型常见）
+    if ((res.status === 503 || res.status === 429) && !/quota|exceeded your|billing|insufficient|credits/i.test(text)) {
+      return { ok: false, msg: T('testBusy', { model, status: res.status }), model };
+    }
     if (!res.ok) return { ok: false, msg: REGION_BLOCKED.test(text) ? providerErrorText(res.status, text, 200) : `${res.status}：${text.slice(0, 200)}`, model };
     return { ok: true, msg: T('testOk', { model, ms: Date.now() - t0 }) };
   } catch (e) {
