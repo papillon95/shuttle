@@ -187,6 +187,13 @@ function effectivePlatformModel(s) {
   return pick.value;
 }
 
+function openrouterGroup(id) {
+  if (/:free$|^openrouter\/free$/.test(id)) return { key: 'or-free', name: '免费模型', nameEn: 'Free models' };
+  if (id.startsWith('anthropic/')) return { key: 'or-claude', name: 'Claude', nameEn: 'Claude' };
+  if (id.startsWith('openai/')) return { key: 'or-openai', name: 'ChatGPT', nameEn: 'ChatGPT' };
+  if (id.startsWith('google/')) return { key: 'or-gemini', name: 'Gemini', nameEn: 'Gemini' };
+  return null;
+}
 // 平台模型列表（来自服务器目录）：[{value:'deepseek:deepseek-chat', provider, name, nameEn, label, labelEn, minPlanLevel, multiplier}]
 function platformModels() {
   if (!catalogCache?.length) return [];
@@ -194,7 +201,9 @@ function platformModels() {
   for (const p of catalogCache) {
     if (p.platform === false) continue; // 平台还没有这家的 Key（暂停中）：只在「我的 Key」里出现
     for (const m of p.models) {
-      out.push({ value: `${p.code}:${m.id}`, provider: p.code, name: p.name, nameEn: p.nameEn, label: m.label, labelEn: m.labelEn,
+      // OpenRouter 的模型按厂商分组显示（Claude / ChatGPT / Gemini / 免费模型），不显示成一组「OpenRouter」
+      const v = p.code === 'openrouter' ? openrouterGroup(m.id) : null;
+      out.push({ value: `${p.code}:${m.id}`, provider: p.code, group: v?.key || p.code, name: v?.name || p.name, nameEn: v?.nameEn || p.nameEn, label: m.label, labelEn: m.labelEn,
         minPlanLevel: m.minPlanLevel || 0, multiplier: m.multiplier ?? 1, supportsVision: !!m.supportsVision, contextWindow: m.contextWindow || 0 });
     }
   }

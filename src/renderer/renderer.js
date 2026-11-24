@@ -2762,7 +2762,7 @@ function sel_revert() {
 
 function renderPlatformModels(sel) {
   const groups = {};
-  for (const m of settings.platformModels || []) (groups[m.provider] ||= { m, list: [] }).list.push(m);
+  for (const m of settings.platformModels || []) (groups[m.group || m.provider] ||= { m, list: [] }).list.push(m);
   for (const { m: first, list } of Object.values(groups)) {
     const g = document.createElement('optgroup');
     g.label = (lang() === 'en' && first.nameEn) || first.name;
@@ -2772,8 +2772,11 @@ function renderPlatformModels(sel) {
       const locked = m.minPlanLevel > userLevel();
       // 只显示模型名：去掉「（通用，便宜）」这类括号说明；需要更高会员的只加一个小锁
       const name = ((lang() === 'en' && m.labelEn) || m.label).replace(/\s*[（(][^）)]*[）)]\s*$/, '').trim();
-      o.textContent = name + (locked ? ' 🔒' : '');
-      o.title = locked ? T('modelNeedPlan', { plan: levelName(m.minPlanLevel) }) : '';
+      // 名字后面标上扣额度的倍数（免费的标「免费」），用户选之前就知道贵不贵
+      const mul = Number(m.multiplier ?? 1);
+      const tag = mul === 0 ? T('modelFreeTag') : `×${+mul.toFixed(2)}`;
+      o.textContent = `${name} ${tag}` + (locked ? ' 🔒' : '');
+      o.title = locked ? T('modelNeedPlan', { plan: levelName(m.minPlanLevel) }) : mul === 0 ? T('modelFreeTip') : T('modelMulTip', { mul: +mul.toFixed(2) });
       g.appendChild(o);
     }
     sel.appendChild(g);
