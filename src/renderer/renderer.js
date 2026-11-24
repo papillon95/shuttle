@@ -2193,7 +2193,7 @@ function openSettings(tab = 'models') {
     const extra = settings.allModels[id].map((m) => m.id).filter((m) => !builtin.includes(m));
     row.innerHTML = `<span>${esc(pName(p))}</span>
       <input type="password" data-key="${id}" placeholder="${settings.hasKey[id] ? esc(T('keySaved')) : 'sk-...'}" />
-      <input data-models="${id}" value="${esc(extra.join(', '))}" placeholder="${esc(id === 'custom' ? T('customRequired') : T('optional'))}" />
+      <input data-models="${id}" value="${esc(extra.join(', '))}" placeholder="${esc(id === 'custom' ? T('customRequired') : T('extraModelsPh'))}" title="${esc(T('extraModelsTip'))}" />
       <button class="ghost test-btn">${esc(T('test'))}</button>
       ${p.keyUrl ? `<a>${esc(T('getKey'))}</a>` : '<span></span>'}
       <div class="test-result"></div>`;
