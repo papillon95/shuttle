@@ -192,6 +192,7 @@ function platformModels() {
   if (!catalogCache?.length) return [];
   const out = [];
   for (const p of catalogCache) {
+    if (p.platform === false) continue; // 平台还没有这家的 Key（暂停中）：只在「我的 Key」里出现
     for (const m of p.models) {
       out.push({ value: `${p.code}:${m.id}`, provider: p.code, name: p.name, nameEn: p.nameEn, label: m.label, labelEn: m.labelEn,
         minPlanLevel: m.minPlanLevel || 0, multiplier: m.multiplier ?? 1, supportsVision: !!m.supportsVision, contextWindow: m.contextWindow || 0 });
