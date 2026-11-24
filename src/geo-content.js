@@ -102,6 +102,37 @@ function parseJsonArray(text) {
 const countChars = (s) => String(s || '').replace(/\s|[#*>`\-]/g, '').length;
 const placeholders = (s) => (String(s || '').match(/【待补充[：:][^】]*】/g) || []);
 
+/**
+ * 写完自动核对：文章里的数字（年份、价格、数量、比例……）必须能在品牌信息里找到，否则标「需核实」；
+ * 另外检查广告法绝对化用语、像是编造的人物引语、冒充消费者的口吻、有没有写到品牌名。都只提示，不改文章。
+ */
+const ABSOLUTE = /(最(?:好|佳|优|强|大|专业|便宜|划算|靠谱|权威|受欢迎)|第一(?!步|次|个|家店|周|天|期|年|阶段|种|点|条)|顶级|顶尖|唯一|首选|首家|全网|国家级|世界级|100%|百分之百|绝对)/g;
+const NUM_RE = /(\d+(?:\.\d+)?)\s*(年|元|块|万|千|亿|家|%|％|人|位|名|个|岁|分钟|小时|课时|节|天|月|周|平方米|平米|㎡|米|公里|间|座|桌|次|倍|项|款|道|种)/g;
+function checkArticle(body, c) {
+  const text = String(body || '').replace(/【待补充[：:][^】]*】/g, '');
+  const factsNums = new Set((String(c.facts).match(/\d+(?:\.\d+)?/g) || []));
+  // 只核对「说品牌自己」的句子：出现品牌名，或者「我们 / 本店 / 该机构」这类代称（通用建议里的数字、用语不算）
+  const self = new RegExp(`${[c.brand, ...c.aliases].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}|我们|本店|本机构|本公司|该机构|该品牌|该公司|该店|门店|校区|旗下`);
+  const sentences = text.split(/[。！？!?\n]+/).filter((x) => self.test(x));
+  const warnings = [];
+  const unverified = new Set();
+  for (const sen of sentences) {
+    for (const m of sen.matchAll(NUM_RE)) if (!factsNums.has(m[1])) unverified.add(m[0].replace(/\s+/g, ''));
+    for (const m of sen.matchAll(/(?<![\d.])((?:19|20)\d{2})(?![\d.])/g)) if (!factsNums.has(m[1])) unverified.add(m[1]);
+  }
+  if (unverified.size) warnings.push({ kind: 'number', text: `介绍品牌的句子里有资料里没有的数字，请核实：${[...unverified].slice(0, 8).join('、')}` });
+  const abs = [...new Set(sentences.flatMap((sen) => [...sen.replace(/(第一|首)家(门店|店|分店)/g, '').matchAll(ABSOLUTE)].map((m) => m[0])))];
+  if (abs.length) warnings.push({ kind: 'ad', text: `介绍品牌时用了可能违反广告法的词：${abs.join('、')}` });
+  if (/(表示|说道|指出|介绍说|坦言|透露)[：:，,]?\s*[“"「]/.test(text) || /[“"「][^”"」]{8,}[”"」]\s*[，,]?\s*(他|她|负责人|创始人|老板|店长|总经理|[^\s，。]{1,6}(?:先生|女士|老师|总))?\s*(表示|说|指出|介绍)/.test(text))
+    warnings.push({ kind: 'quote', text: '文中有人物引语，确认是真实说过的话，否则删掉' });
+  if (/(我(?:家|们家)?(?:孩子|娃|闺女|儿子)|我(?:买|吃|喝|去|报|试)了|亲测|回购|踩雷|姐妹们冲)/.test(text))
+    warnings.push({ kind: 'persona', text: '有像消费者亲身体验的说法，品牌方发布会被认为是虚假测评，请改成客观介绍' });
+  if (findBrand(text, c) < 0) warnings.push({ kind: 'brand', text: '正文里没有出现品牌名' });
+  return warnings;
+}
+const normT = (x) => String(x || '').toLowerCase().replace(/\s/g, '');
+const findBrand = (text, c) => Math.max(...[c.brand, ...c.aliases].map((n) => normT(text).indexOf(normT(n))));
+
 async function pool(items, n, fn, signal) {
   let i = 0;
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
@@ -116,7 +147,7 @@ function loadLatestRun(projDir) {
   const f = fs.readdirSync(dir).filter((x) => x.endsWith('.json')).sort().pop();
   if (!f) return null;
   try {
-    return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    return geo.regroundRun(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
   } catch {
     return null;
   }
@@ -221,19 +252,21 @@ async function run(args, root, deps) {
     const { title, body } = parseArticle(r.text, t.q);
     const file = `${pad(t.qi + 1)}-${t.p}.md`;
     fs.writeFileSync(path.join(outDir, file), `# ${title}\n\n${body}\n`);
-    articles.push({ ...t, title, body, file, chars: countChars(body), todo: placeholders(body) });
+    articles.push({ ...t, title, body, file, chars: countChars(body), todo: placeholders(body), warnings: checkArticle(title + '\n' + body, c) });
   }, deps.signal);
   if (deps.signal?.aborted) return { error: zh ? '已停止' : 'Stopped' };
   articles.sort((a, b) => a.qi - b.qi || platforms.indexOf(a.p) - platforms.indexOf(b.p));
 
   // 2. 官网 FAQ + 结构化数据 + llms.txt
   let faq = [];
+  let faqWarnings = [];
   if (withSite) {
     const r = await deps.ask(model.value, [{ role: 'user', content: FAQ_PROMPT(c, questions) }], Math.min(4000, 600 + questions.length * 350));
     done++;
     deps.progress(zh ? `正在写内容 ${done}/${steps}…` : `Writing ${done}/${steps}…`);
     const arr = parseJsonArray(r.text) || [];
     faq = arr.filter((x) => x && x.q && x.a).map((x) => ({ q: String(x.q).trim(), a: String(x.a).trim() })).slice(0, questions.length);
+    faqWarnings = checkArticle(faq.map((x) => x.a).join('\n'), c).filter((w) => w.kind !== 'brand');
     if (faq.length) {
       const siteDir = path.join(outDir, 'site');
       fs.mkdirSync(siteDir, { recursive: true });
@@ -244,7 +277,7 @@ async function run(args, root, deps) {
     }
   }
 
-  const res = { brand, outDir, projDir, model: model.label, platforms, questions, articles, faq, fromRun, hasRun: !!last, stamp };
+  const res = { brand, outDir, projDir, model: model.label, platforms, questions, articles, faq, faqWarnings, fromRun, hasRun: !!last, stamp };
   fs.writeFileSync(path.join(outDir, 'content.json'), JSON.stringify({ ...res, facts }, null, 2));
   res.indexFile = path.join(outDir, 'index.html');
   fs.writeFileSync(res.indexFile, renderIndex(res, zh));
@@ -294,6 +327,13 @@ function textSummary(res, zh = true) {
   }
   if (bad.length) L.push('失败：' + bad.map((a) => `${a.q}（${PLATFORMS[a.p].zh}：${a.error}）`).join('；'));
   if (todo.length) L.push(`\n文中有 ${todo.length} 处需要品牌方补充的信息：` + todo.slice(0, 12).join(' '));
+  const warned = ok.filter((a) => a.warnings.length);
+  if (warned.length || res.faqWarnings.length) {
+    L.push(`\n自动核对发现 ${warned.length + (res.faqWarnings.length ? 1 : 0)} 篇需要注意（汇总页里每篇都标出来了）：`);
+    for (const a of warned.slice(0, 10)) L.push(`- ${PLATFORMS[a.p].zh}《${a.title}》：` + a.warnings.map((w) => w.text).join('；'));
+    if (res.faqWarnings.length) L.push('- 官网 FAQ：' + res.faqWarnings.map((w) => w.text).join('；'));
+    L.push('请把这些逐条告诉用户，特别是「品牌信息里没有的数字」——要么是品牌方需要确认的真实信息，要么是写作模型编的，必须核实或删掉后再发。');
+  } else L.push('\n自动核对：没发现资料外的数字、绝对化用语、人物引语或冒充消费者的说法（仍需人工通读）。');
   L.push('\n请向用户简要说明：');
   L.push('1. 发布前逐篇看一遍，把【待补充】填上真实信息，删掉不准确的内容；');
   L.push('2. 用自己的账号发布：知乎（DeepSeek、千问、Kimi 联网常引用）、百家号（文心常引用）、头条 / 抖音（豆包常引用）、小红书；新闻稿要通过新闻稿发布渠道发到新闻网站（一般收费），发之前确认里面的事实都属实；同一篇不要在同一平台重复发，也不要批量注册账号刷内容；');
@@ -306,14 +346,14 @@ function textSummary(res, zh = true) {
 function renderIndex(res, zh) {
   const ok = res.articles.filter((a) => !a.error);
   const tips = Object.entries(PLATFORMS).filter(([k]) => res.platforms.includes(k)).map(([, p]) => `<li><b>${p.zh}</b>：${p.note}</li>`).join('');
-  const item = (title, body, meta, file) => `<details class="card"><summary><b>${esc(title)}</b><span class="meta">${meta}</span></summary>
+  const item = (title, body, meta, file, warns = []) => `<details class="card"><summary><b>${esc(title)}</b><span class="meta">${meta}</span></summary>${warns.length ? `<ul class="warn">${warns.map((w) => `<li>${esc(w.text)}</li>`).join('')}</ul>` : ''}
 <div class="btns"><button data-copy="t">复制标题</button><button data-copy="b">复制正文</button>${file ? `<span class="file">${esc(file)}</span>` : ''}</div>
 <textarea hidden class="t">${esc(title)}</textarea><textarea hidden class="b">${esc(body)}</textarea><pre>${esc(body).replace(/【待补充[：:][^】]*】/g, (m) => `<mark>${m}</mark>`)}</pre></details>`;
   const sections = res.questions.map((q, i) => {
     const as = ok.filter((a) => a.q === q);
-    return `<h2>${i + 1}. ${esc(q)}</h2>${as.map((a) => item(a.title, a.body, `${PLATFORMS[a.p].zh} · ${a.chars} 字${a.todo.length ? ` · <em>${a.todo.length} 处待补充</em>` : ''}`, a.file)).join('')}`;
+    return `<h2>${i + 1}. ${esc(q)}</h2>${as.map((a) => item(a.title, a.body, `${PLATFORMS[a.p].zh} · ${a.chars} 字${a.todo.length ? ` · <em>${a.todo.length} 处待补充</em>` : ''}${a.warnings.length ? ` · <em>${a.warnings.length} 项需核实</em>` : ''}`, a.file, a.warnings)).join('')}`;
   }).join('');
-  const faqSec = res.faq.length ? `<h2>官网常见问题（site/faq.html · faq-schema.json · llms.txt）</h2>${item('常见问题', res.faq.map((x) => `${x.q}\n${x.a}`).join('\n\n'), `${res.faq.length} 条`, 'site/faq.html')}` : '';
+  const faqSec = res.faq.length ? `<h2>官网常见问题（site/faq.html · faq-schema.json · llms.txt）</h2>${item('常见问题', res.faq.map((x) => `${x.q}\n${x.a}`).join('\n\n'), `${res.faq.length} 条${res.faqWarnings.length ? ` · <em>${res.faqWarnings.length} 项需核实</em>` : ''}`, 'site/faq.html', res.faqWarnings)}` : '';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(res.brand)} · GEO 内容</title><style>
 :root{--bg:#f7f6f3;--card:#fff;--text:#222;--muted:#6b6b6b;--border:#e5e2db;--accent:#c96442;--mark:#fde7a8}
@@ -323,11 +363,11 @@ main{max-width:920px;margin:0 auto}h1{font-size:22px;margin:0 0 2px}h2{font-size
 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 14px;margin-bottom:8px}summary{cursor:pointer}.meta{color:var(--muted);font-size:12px;margin-left:8px}.meta em{color:var(--accent);font-style:normal}
 .tips{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 16px}.tips ul,.tips ol{margin:4px 0;padding-left:20px}
 .btns{margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}button{border:1px solid var(--border);background:var(--bg);color:var(--text);border-radius:8px;padding:3px 10px;cursor:pointer;font:inherit;font-size:12px}button.done{color:var(--accent);border-color:var(--accent)}.file{color:var(--muted);font-size:12px}
-pre{white-space:pre-wrap;word-break:break-word;font:13px/1.65 inherit;background:var(--bg);border-radius:8px;padding:10px 12px;max-height:420px;overflow:auto;margin:0}mark{background:var(--mark);color:inherit;border-radius:3px}
+pre{white-space:pre-wrap;word-break:break-word;font:13px/1.65 inherit;background:var(--bg);border-radius:8px;padding:10px 12px;max-height:420px;overflow:auto;margin:0}mark{background:var(--mark);color:inherit;border-radius:3px}.warn{margin:8px 0 0;padding:8px 12px 8px 28px;border-radius:8px;background:var(--mark);font-size:12.5px}
 </style></head><body><main>
 <h1>${esc(res.brand)} · GEO 内容</h1><div class="sub">${esc(res.stamp)} · ${ok.length} 篇 · ${esc(res.model)} 生成${res.fromRun ? ' · 问题取自最近一次监测（品牌词问题 + AI 提及率低的问题）' : ''}</div>
 <div class="tips"><b>怎么用</b><ol>
-<li>逐篇检查，把<mark>【待补充】</mark>填成真实信息，删掉不准确的地方。</li>
+<li>逐篇检查，把<mark>【待补充】</mark>填成真实信息；标了「需核实」的（资料里没有的数字、绝对化用语、人物引语等）一定要确认或删掉。</li>
 <li>用自己的账号发布，同一篇别在同一平台重复发：<ul>${tips}</ul></li>
 ${res.faq.length ? '<li>官网：faq.html 里的问答和 JSON-LD 结构化数据放到常见问题页，llms.txt 放到网站根目录。</li>' : ''}
 <li>不要发虚假测评、冒充用户的好评。</li>
@@ -340,4 +380,4 @@ const o=b.textContent;b.textContent='已复制';b.classList.add('done');setTimeo
 </script></main></body></html>`;
 }
 
-module.exports = { run, textSummary, parseArticle, renderIndex, PLATFORMS, DEFAULT_PLATFORMS };
+module.exports = { run, textSummary, parseArticle, renderIndex, checkArticle, PLATFORMS, DEFAULT_PLATFORMS };

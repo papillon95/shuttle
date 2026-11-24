@@ -2277,7 +2277,7 @@ async function platformAsk(model, messages, maxTokens, signal) {
         continue;
       }
       if (err === 'unauthorized') send({ type: 'auth-expired' });
-      if (err) return { text: '', error: T('err_' + err) !== 'err_' + err ? T('err_' + err) : err };
+      if (err) return { text: '', code: err, error: T('err_' + err) !== 'err_' + err ? T('err_' + err) : err };
       return { text: text.trim() };
     } catch (e) {
       if (signal?.aborted) return { text: '', error: 'aborted' };

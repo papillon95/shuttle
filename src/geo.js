@@ -71,7 +71,7 @@ function ruleAnalyze(answer, brandNames, competitors) {
   };
 }
 
-const ANALYZE_PROMPT = (brand, aliases, competitors, question, answer) => `下面是一个 AI 助手对用户问题的回答。请分析并只输出一个 JSON 对象，不要输出其他内容。
+const ANALYZE_PROMPT = (brand, aliases, competitors, question, answer) => `下面是一个 AI 助手对用户问题的回答。请分析并只输出一个 JSON 对象，不要输出其他内容。所有内容都必须来自回答原文，原文没有的不要写。
 
 用户问题：${question}
 要关注的品牌：${brand}${aliases.length ? `（也叫：${aliases.join('、')}）` : ''}
@@ -79,12 +79,11 @@ const ANALYZE_PROMPT = (brand, aliases, competitors, question, answer) => `下�
 
 JSON 字段：
 - recommended: 回答里推荐或列举的品牌 / 公司 / 产品名（照原文抄，不要添加回答里没有的名字），按出现顺序，最多 10 个，字符串数组
-- brand_mentioned: 回答原文里是否出现了要关注的品牌名（含别名），true / false；只是提到类似的公司不算
-- brand_position: 要关注的品牌在 recommended 里是第几个（从 1 开始），没提到就是 null
-- sentiment: 回答对「要关注的品牌」本身的态度，"positive" / "neutral" / "negative"，没提到就是 null。只看直接针对这个品牌的句子，别的品牌（包括竞品）的好坏评价不要算进来
-- brand_summary: 回答里直接描述「要关注的品牌」的话，概括成一句（30 字内），没提到就是 ""。不要把描述其他品牌的话安到它头上；如果回答把这个名字理解成了别的东西（比如同名的其他公司、产品或工具），照实写出来
+- same_entity: 如果回答原文里出现了「要关注的品牌」的名字，说的是不是这个品牌本身（true）；如果说的是同名或近似名字的其他公司、产品、品牌（比如把它当成了别的知名品牌），填 false；原文没出现这个名字就填 null
+- brand_quote: 回答原文里直接描述「要关注的品牌」的一句话，一字不改地照抄（不超过 80 字）；没有就是 ""。不要抄描述其他品牌的句子
+- sentiment: 这句话对「要关注的品牌」的态度，"positive" / "neutral" / "negative"；没有 brand_quote 就是 null
 - brand_unknown: 回答是否表示不了解 / 查不到 / 不确定这个品牌（只给通用建议、或说「可能是」「需要确认是哪家」），true / false
-- sources: 回答里提到的信息来源（网址、网站或平台名，如 知乎、某公众号、官网），字符串数组，没有就是 []
+- sources: 回答原文里明确写出的信息来源（网址、网站或平台名），照原文抄，字符串数组，没有就是 []
 
 回答：
 """
@@ -100,6 +99,64 @@ function parseJson(text) {
     return null;
   }
 }
+
+// 分析结果的版本：口径变了就加 1，历史监测会按新口径用保存的原始回答重算
+const ANALYSIS_VERSION = 4;
+
+/**
+ * 把一条回答的分析落到原文上：分析模型只是帮忙抽取，最后只采用原文里能找到依据的部分。
+ * - 「提到」：原文里出现品牌名才算；分析模型只能否决（判断是同名的其他东西 → 记为「同名混淆」），不能凭空认定提到
+ * - 推荐名单、信息来源：只保留原文里出现的名字
+ * - 描述：必须是原文里一字不差的句子；态度跟着这句话走，没有原文依据就记中性
+ */
+const UNKNOWN_RE = /(暂未|暂时没有|没有|未能|无法|没能|并未)(查询到|查到|找到|检索到|获取到?|搜索到)|(公开|相关|可查)的?(详细)?(信息|资料)(相对|比较|非常)?(有限|较少|很少|不多)|可能是(指|一个|一家|某)|(需要|请|建议)(先)?(明确|确认|核实)(具体|一下)?(是)?哪(一)?家|不(太)?确定(是|指)|不(太)?了解(这|该)|没有(找到|关于)(该|这)|(未|没有)(收录|掌握)|(无法|不能)(直接|实时)?(给出|获取|判断|评价|确认|核实)|由于(其|它|该品牌|该公司)?可能|可能对应不同|(具体)?指的?是哪(一)?家|名称(存在)?(近似|相近)/;
+
+function groundAnswer(a, llm, ctx) {
+  const { brandNames, competitors, zh } = ctx;
+  a.llm = llm || null;
+  a.analyzed = !!llm;
+  const rule = ruleAnalyze(a.answer, brandNames, competitors);
+  const text = norm(a.answer);
+  const inText = (n) => {
+    const k = norm(String(n).replace(/[（(].*?[）)]/g, ''));
+    return k.length >= 2 && text.includes(k);
+  };
+  a.confused = rule.mentioned && llm?.same_entity === false;
+  a.mentioned = rule.mentioned && !a.confused;
+  a.recommended = Array.isArray(llm?.recommended) ? llm.recommended.map((x) => String(x).trim()).filter(inText).slice(0, 10) : [];
+  const llmPos = a.recommended.findIndex((n) => findName(n, brandNames) >= 0);
+  a.position = a.mentioned ? (llmPos >= 0 ? llmPos + 1 : rule.position || null) : null;
+  const quote = String(llm?.brand_quote || llm?.brand_summary || '').trim();
+  const brandQ = findName(a.question, brandNames) >= 0;
+  // 原话必须在原文里，并且说的是品牌本身（出现品牌名，或者问的就是这个品牌、句子以「它 / 该品牌 / 这家」开头）
+  const aboutBrand = findName(quote, brandNames) >= 0 || (brandQ && /^[“"「]?(它|该品牌|该公司|该店|这家|这个品牌)/.test(quote));
+  const quoteOk = a.mentioned && norm(quote).length >= 4 && text.includes(norm(quote)) && aboutBrand;
+  // 「不了解这个品牌」：分析模型的判断，加上原文里的典型说法（小模型经常漏判）
+  a.unknown = a.mentioned && (!!llm?.brand_unknown || UNKNOWN_RE.test(a.answer));
+  a.quote = quoteOk && !a.unknown ? quote.slice(0, 120) : '';
+  a.sentiment = a.mentioned ? (a.quote && ['positive', 'neutral', 'negative'].includes(llm?.sentiment) ? llm.sentiment : 'neutral') : null;
+  a.summary = a.unknown ? (zh ? 'AI 表示不了解 / 查不到这个品牌' : 'AI says it does not know this brand') : a.quote;
+  a.sources = Array.isArray(llm?.sources) ? llm.sources.map((x) => String(x).trim()).filter(inText).slice(0, 10) : [];
+  a.competitorHits = rule.competitors;
+  return a;
+}
+
+/** 旧口径的监测记录按当前口径重算（用保存的原始回答；没存分析原文的老记录，用当时抽取的字段当作分析结果再核对一遍） */
+function regroundRun(d, zh = true) {
+  if (!d || d.analysisVersion === ANALYSIS_VERSION) return d;
+  const ctx = { brandNames: [d.brand, ...(d.aliases || [])], competitors: d.competitors || [], zh };
+  for (const a of d.answers || []) {
+    if (!a.answer || a.error) continue;
+    const llm = a.llm !== undefined ? a.llm : { recommended: a.recommended, sentiment: a.sentiment, brand_summary: a.summary, sources: a.sources, same_entity: null };
+    groundAnswer(a, llm, ctx);
+  }
+  d.summary = summarize(d);
+  d.regrounded = true;
+  return d;
+}
+
+/** 同一组问题和模型才能放进同一条趋势线 */
+const configKey = (d) => JSON.stringify([[...(d.questions || [])].sort(), (d.models || []).map((m) => m.value || m).sort(), d.repeats || 0]);
 
 async function pool(items, n, fn, signal) {
   let i = 0;
@@ -153,46 +210,47 @@ async function run(args, root, deps) {
   const answers = [];
   let done = 0;
   const brandNames = [brand, ...aliases];
+  // 额度用完 / 登录失效就整体停下（再问也是失败，白等）；某个模型没权限就跳过它剩下的提问
+  const stop = new AbortController();
+  const sig = deps.signal ? AbortSignal.any([deps.signal, stop.signal]) : stop.signal;
+  let stopReason = null;
+  const deadModels = new Map();
   await pool(tasks, 2, async (t) => {
+    if (deadModels.has(t.m.value)) {
+      answers.push({ question: t.q, model: t.m.value, modelLabel: t.m.label, round: t.r + 1, answer: '', error: deadModels.get(t.m.value), skipped: true });
+      return;
+    }
     const res = await deps.ask(t.m.value, [{ role: 'user', content: t.q }], 1500);
     done++;
     deps.progress(zh ? `正在问 AI ${done}/${calls}…` : `Asking ${done}/${calls}…`);
+    if (res.code === 'quota_exceeded' || res.code === 'unauthorized') {
+      stopReason = res.error;
+      stop.abort();
+    } else if (res.code === 'plan_required' || res.code === 'model_not_found') deadModels.set(t.m.value, res.error);
     answers.push({ question: t.q, model: t.m.value, modelLabel: t.m.label, round: t.r + 1, answer: res.text || '', error: res.error || null });
-  }, deps.signal);
+  }, sig);
   if (deps.signal?.aborted) return { error: zh ? '已停止' : 'Stopped' };
+  if (stopReason && !answers.some((a) => a.answer)) return { error: stopReason };
 
-  // 2. 逐条分析：规则判断 + 便宜模型抽取推荐名单、态度、来源
+  // 2. 逐条分析：便宜模型帮忙抽取，再用原文核对（见 groundAnswer）；抽取失败重试一次，还失败就只按原文判断提没提到
   let ad = 0;
   const ok = answers.filter((a) => a.answer && !a.error);
+  const ctx = { brandNames, competitors, zh };
   await pool(ok, 2, async (a) => {
-    const rule = ruleAnalyze(a.answer, brandNames, competitors);
     let llm = null;
-    if (deps.analyzeModel) {
-      const r = await deps.ask(deps.analyzeModel, [{ role: 'user', content: ANALYZE_PROMPT(brand, aliases, competitors, a.question, a.answer) }], 600);
-      llm = parseJson(r.text);
+    if (deps.analyzeModel && !stopReason) {
+      for (let i = 0; i < 2 && !llm; i++) {
+        const r = await deps.ask(deps.analyzeModel, [{ role: 'user', content: ANALYZE_PROMPT(brand, aliases, competitors, a.question, a.answer) }], 700);
+        if (r.code === 'quota_exceeded' || r.code === 'unauthorized') {
+          stopReason = r.error;
+          break;
+        }
+        llm = parseJson(r.text);
+      }
     }
     ad++;
     deps.progress(zh ? `正在分析回答 ${ad}/${ok.length}…` : `Analyzing ${ad}/${ok.length}…`);
-    // 「有没有提到」只认原文里搜得到品牌名（小模型对陌生品牌很容易误报「提到了」，还会把描述别家的话安到它头上）；
-    // 推荐名单只保留原文里确实出现的名字；没提到品牌时，排名、态度、描述一律不要
-    a.mentioned = rule.mentioned;
-    const inText = (n) => {
-      const k = norm(String(n).replace(/[（(].*?[）)]/g, ''));
-      return k.length >= 2 && norm(a.answer).includes(k);
-    };
-    a.recommended = Array.isArray(llm?.recommended) ? llm.recommended.map(String).filter(inText).slice(0, 10) : [];
-    const llmPos = a.recommended.findIndex((n) => findName(n, brandNames) >= 0);
-    a.position = a.mentioned ? (llmPos >= 0 ? llmPos + 1 : rule.position || null) : null;
-    a.sentiment = a.mentioned ? (['positive', 'neutral', 'negative'].includes(llm?.sentiment) ? llm.sentiment : 'neutral') : null;
-    a.summary = a.mentioned ? String(llm?.brand_summary || '').slice(0, 80) : '';
-    a.unknown = a.mentioned && !!llm?.brand_unknown;
-    if (a.unknown) {
-      // AI 自己都说不了解，态度算中性，描述只记「不了解」（避免把它顺口编的话当成 AI 的认知）
-      a.sentiment = 'neutral';
-      a.summary = zh ? 'AI 表示不了解 / 查不到这个品牌' : 'AI says it does not know this brand';
-    }
-    a.sources = Array.isArray(llm?.sources) ? llm.sources.map(String).slice(0, 10) : [];
-    a.competitorHits = rule.competitors;
+    groundAnswer(a, llm, ctx);
   }, deps.signal);
 
   // 3. 汇总
@@ -200,101 +258,149 @@ async function run(args, root, deps) {
   const pad = (n) => String(n).padStart(2, '0');
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const fileStamp = stamp.replace(/[: ]/g, '-') + '-' + pad(now.getSeconds());
-  const runData = { at: new Date().toISOString(), stamp, brand, aliases, competitors, questions, repeats, models: models.map((m) => ({ value: m.value, label: m.label })), answers };
+  const runData = { at: new Date().toISOString(), stamp, analysisVersion: ANALYSIS_VERSION, brand, aliases, competitors, questions, repeats, models: models.map((m) => ({ value: m.value, label: m.label })), answers, stopReason };
   runData.summary = summarize(runData);
   fs.writeFileSync(path.join(projDir, 'runs', fileStamp + '.json'), JSON.stringify(runData, null, 2));
   const history = fs.readdirSync(path.join(projDir, 'runs')).filter((f) => f.endsWith('.json')).sort().map((f) => {
     try {
-      const d = JSON.parse(fs.readFileSync(path.join(projDir, 'runs', f), 'utf8'));
-      return { stamp: d.stamp, summary: d.summary };
+      const d = regroundRun(JSON.parse(fs.readFileSync(path.join(projDir, 'runs', f), 'utf8')), zh);
+      return { stamp: d.stamp, summary: d.summary, key: configKey(d), regrounded: !!d.regrounded };
     } catch {
       return null;
     }
   }).filter(Boolean);
+  // 趋势只比较问题和模型都相同的几次，其余的单独说明
+  const key = configKey(runData);
+  const comparable = history.filter((h) => h.key === key);
   const reportFile = path.join(projDir, 'report.html');
-  fs.writeFileSync(reportFile, renderReport(runData, history, zh));
-  return { runData, history, reportFile, projDir, skipped };
+  const res = { runData, history: comparable, otherRuns: history.length - comparable.length, regrounded: comparable.filter((h) => h.regrounded).length, reportFile, projDir, skipped };
+  fs.writeFileSync(reportFile, renderReport(runData, comparable, zh, qualityNotes(res, zh)));
+  return res;
 }
+
+// 每个比例都带上样本数；少于这个数的比例只作参考
+const MIN_SAMPLE = 6;
 
 function summarize(d) {
   const valid = d.answers.filter((a) => a.answer && !a.error);
-  const pct = (n, t) => (t ? Math.round((n / t) * 100) : 0);
-  const byModel = d.models.map((m) => {
-    const as = valid.filter((a) => a.model === m.value);
+  const pct = (n, t) => (t ? Math.round((n / t) * 100) : null);
+  // 问题里本身带了品牌名的（「XX 怎么样」）一定会提到品牌，单独算，不计入提及率
+  const names = [d.brand, ...(d.aliases || [])];
+  const isBrandQ = new Set(d.questions.filter((q) => findName(q, names) >= 0));
+  const generic = valid.filter((a) => !isBrandQ.has(a.question));
+  const rateBase = generic.length ? generic : valid;
+  const stat = (as) => {
     const hit = as.filter((a) => a.mentioned);
     const ranked = hit.filter((a) => a.position > 0);
     return {
-      model: m.label, total: as.length, mentioned: hit.length, rate: pct(hit.length, as.length),
-      avgPos: ranked.length ? +(ranked.reduce((s, a) => s + a.position, 0) / ranked.length).toFixed(1) : null,
+      total: as.length, mentioned: hit.length, rate: pct(hit.length, as.length), low: as.length < MIN_SAMPLE,
+      avgPos: ranked.length ? +(ranked.reduce((x, a) => x + a.position, 0) / ranked.length).toFixed(1) : null,
       top3: pct(ranked.filter((a) => a.position <= 3).length, as.length),
-      errors: d.answers.filter((a) => a.model === m.value && a.error).length,
     };
+  };
+  const byModel = d.models.map((m) => {
+    const failed = d.answers.filter((a) => a.model === m.value && a.error);
+    return { model: m.label, ...stat(rateBase.filter((a) => a.model === m.value)), errors: failed.length, errorReason: failed[0]?.error || null };
   });
-  // 问题里本身带了品牌名的（「XX 怎么样」）一定会提到品牌，单独算，不计入总提及率
-  const names = [d.brand, ...(d.aliases || [])];
   const byQuestion = d.questions.map((q) => {
     const as = valid.filter((a) => a.question === q);
-    return { question: q, rate: pct(as.filter((a) => a.mentioned).length, as.length), brandQ: findName(q, names) >= 0 };
+    return { question: q, ...stat(as), brandQ: isBrandQ.has(q) };
   });
-  const isBrandQ = new Set(byQuestion.filter((q) => q.brandQ).map((q) => q.question));
-  const generic = valid.filter((a) => !isBrandQ.has(a.question));
-  const rateBase = generic.length ? generic : valid;
-  // 被推荐最多的名字（看看 AI 把客户推给了谁）
+  // AI 把客户推给了谁（只统计原文里出现的名字）
   const count = new Map();
-  for (const a of valid) for (const n of new Set((a.recommended || []).map((x) => x.trim()).filter(Boolean))) count.set(n, (count.get(n) || 0) + 1);
+  for (const a of valid) for (const n of new Set((a.recommended || []).filter((x) => findName(x, names) < 0))) count.set(n, (count.get(n) || 0) + 1);
   const topRecommended = [...count.entries()].sort((x, y) => y[1] - x[1]).slice(0, 15).map(([name, n]) => ({ name, n, rate: pct(n, valid.length) }));
-  const comp = d.competitors.map((c) => ({ name: c, rate: pct(valid.filter((a) => (a.competitorHits || []).some((h) => h.name === c) || (a.recommended || []).some((r) => norm(r).includes(norm(c)))).length, valid.length) }));
+  const comp = d.competitors.map((c) => ({ name: c, rate: pct(rateBase.filter((a) => (a.competitorHits || []).some((h) => h.name === c)).length, rateBase.length) ?? 0 }));
   const srcCount = new Map();
-  for (const a of valid) for (const s of new Set(a.sources || [])) srcCount.set(s, (srcCount.get(s) || 0) + 1);
+  for (const a of valid) for (const x of new Set(a.sources || [])) srcCount.set(x, (srcCount.get(x) || 0) + 1);
   const sources = [...srcCount.entries()].sort((x, y) => y[1] - x[1]).slice(0, 15).map(([name, n]) => ({ name, n }));
   const hits = valid.filter((a) => a.mentioned);
-  const sent = { positive: hits.filter((a) => a.sentiment === 'positive').length, neutral: hits.filter((a) => a.sentiment === 'neutral').length, negative: hits.filter((a) => a.sentiment === 'negative').length };
-  const descriptions = [...new Set(hits.map((a) => a.summary).filter(Boolean))].slice(0, 8);
-  if (isBrandQ.size && generic.length) for (const m of byModel) {
-    const as = generic.filter((a) => d.models.find((x) => x.label === m.model)?.value === a.model);
-    const hit = as.filter((a) => a.mentioned);
-    const ranked = hit.filter((a) => a.position > 0);
-    Object.assign(m, { total: as.length, mentioned: hit.length, rate: pct(hit.length, as.length),
-      avgPos: ranked.length ? +(ranked.reduce((x, a) => x + a.position, 0) / ranked.length).toFixed(1) : null, top3: pct(ranked.filter((a) => a.position <= 3).length, as.length) });
-  }
-  const brandHits = valid.filter((a) => isBrandQ.has(a.question) && a.mentioned);
+  const sentOf = (as) => ({ positive: as.filter((a) => a.sentiment === 'positive').length, neutral: as.filter((a) => a.sentiment === 'neutral').length, negative: as.filter((a) => a.sentiment === 'negative').length });
+  const quotesOf = (as) => [...new Set(as.map((a) => a.quote).filter(Boolean))].slice(0, 8);
+  const brandHits = hits.filter((a) => isBrandQ.has(a.question));
   const brandQs = isBrandQ.size ? {
     count: isBrandQ.size,
     answers: valid.filter((a) => isBrandQ.has(a.question)).length,
-    sentiment: { positive: brandHits.filter((a) => a.sentiment === 'positive').length, neutral: brandHits.filter((a) => a.sentiment === 'neutral').length, negative: brandHits.filter((a) => a.sentiment === 'negative').length },
-    descriptions: [...new Set(brandHits.map((a) => a.summary).filter(Boolean))].slice(0, 8),
+    sentiment: sentOf(brandHits),
+    descriptions: quotesOf(brandHits),
     unknown: brandHits.filter((a) => a.unknown).length,
+    confused: valid.filter((a) => isBrandQ.has(a.question) && a.confused).length,
   } : null;
-  return { total: valid.length, errors: d.answers.length - valid.length, mentioned: hits.length, rate: pct(rateBase.filter((a) => a.mentioned).length, rateBase.length), rateTotal: rateBase.length, brandQs, byModel, byQuestion, topRecommended, competitors: comp, sources, sentiment: sent, descriptions };
+  const genericHits = hits.filter((a) => !isBrandQ.has(a.question));
+  const errs = d.answers.filter((a) => a.error);
+  const errorReasons = [...new Set(errs.map((a) => a.error))].slice(0, 3);
+  return {
+    total: valid.length, errors: errs.length, errorReasons, asked: d.answers.length,
+    analysisFailed: valid.filter((a) => !a.analyzed).length,
+    confused: valid.filter((a) => a.confused).length,
+    mentioned: hits.length, rate: pct(rateBase.filter((a) => a.mentioned).length, rateBase.length) ?? 0, rateTotal: rateBase.length, low: rateBase.length < MIN_SAMPLE * 2,
+    brandQs, byModel, byQuestion, topRecommended, competitors: comp, sources,
+    sentiment: sentOf(genericHits), descriptions: quotesOf(genericHits),
+    confusedQuotes: [...new Set(valid.filter((a) => a.confused).map((a) => { const t = a.answer.replace(/\s+/g, ' '); const i = Math.min(...names.map((n) => t.indexOf(n)).filter((x) => x >= 0)); return Number.isFinite(i) ? t.slice(Math.max(0, i - 20), i + 60) : ''; }).filter(Boolean))].slice(0, 3),
+    stopReason: d.stopReason || null,
+  };
 }
+
+/** 数据可信度说明（报告和给模型的摘要共用） */
+function qualityNotes(res, zh = true) {
+  const s = res.runData.summary;
+  const N = [];
+  if (s.stopReason) N.push(zh ? `中途停止：${s.stopReason}，只统计了已经拿到的回答` : `Stopped early: ${s.stopReason}`);
+  if (s.errors) N.push(zh ? `${s.errors}/${s.asked} 次提问失败（${s.errorReasons.join('；')}），失败的不计入统计` : `${s.errors}/${s.asked} calls failed (${s.errorReasons.join('; ')})`);
+  for (const m of s.byModel) if (!m.total && m.errors) N.push(zh ? `${m.model} 全部失败，不代表它没提到品牌` : `${m.model} failed entirely; that is not a 0% result`);
+  if (s.analysisFailed) N.push(zh ? `${s.analysisFailed} 条回答自动分析失败，这些只按原文判断了有没有提到，排名、态度、推荐名单没统计` : `${s.analysisFailed} answers could not be analyzed; only mentions were counted`);
+  if (s.confused) N.push(zh ? `${s.confused} 条回答里出现了品牌名，但说的是同名或近似名字的其他东西，没算作提到${s.confusedQuotes.length ? '，例：' + s.confusedQuotes.map((x) => `「…${x}…」`).join(' ') : ''}` : `${s.confused} answers used the name for a different entity and were not counted`);
+  if (s.low) N.push(zh ? `用来算提及率的回答只有 ${s.rateTotal} 条，比例波动会比较大` : `Only ${s.rateTotal} answers behind the mention rate; treat it as rough`);
+  else if (s.byModel.some((m) => m.total && m.low)) N.push(zh ? `部分模型的回答少于 ${MIN_SAMPLE} 条（${s.byModel.filter((m) => m.total && m.low).map((m) => `${m.model} ${m.total} 条`).join('、')}），单个模型的比例只作参考` : `Some models have fewer than ${MIN_SAMPLE} answers`);
+  if (res.regrounded) N.push(zh ? `有 ${res.regrounded} 次历史监测是按旧口径统计的，已用保存的原始回答按现在的口径重算` : `${res.regrounded} past checks were recalculated with the current method`);
+  if (res.otherRuns) N.push(zh ? `另有 ${res.otherRuns} 次监测的问题或模型不同，没放进趋势对比` : `${res.otherRuns} other checks used different questions or models and are not in the trend`);
+  N.push(zh ? '「提到」只按回答原文里有没有出现品牌名来算；AI 的描述只采用原文里一字不差的句子' : 'Mentions are counted only when the brand name appears in the answer text; descriptions are verbatim quotes');
+  N.push(zh ? '这是通过接口直接问模型的结果（没有联网搜索），反映的是模型自身的印象，和 App 里打开联网搜索时的回答可能不同' : 'Answers come from the API without web search and may differ from the apps');
+  return N;
+}
+
+const fmtRate = (r, zh) => (r == null ? (zh ? '无数据' : 'n/a') : r + '%');
 
 /** 给模型看的文字摘要 */
 function textSummary(res, zh = true) {
   const d = res.runData;
   const s = d.summary;
   const L = [];
-  L.push(zh ? `AI 可见度监测「${d.brand}」完成（${d.stamp}）：有效回答 ${s.total} 条${s.errors ? `，失败 ${s.errors} 条` : ''}，提到品牌 ${s.mentioned} 条；${s.brandQs ? '不带品牌名的问题里' : ''}AI 主动提到品牌的比例（提及率）${s.rate}%。` : `AI visibility check for "${d.brand}" done: ${s.total} answers, mention rate ${s.rate}%${s.brandQs ? ' (questions without the brand name)' : ''}.`);
-  if (s.brandQs) {
-    const b = s.brandQs;
-    L.push(zh
-      ? `直接问品牌的问题 ${b.count} 个（${b.answers} 条回答，不计入提及率）：其中 ${b.unknown || 0} 条表示不了解 / 查不到这个品牌；态度 正面 ${b.sentiment.positive}、中性 ${b.sentiment.neutral}、负面 ${b.sentiment.negative}${b.descriptions.length ? '；AI 这样介绍它：' + b.descriptions.map((x) => `「${x}」`).join(' ') : ''}。注意：网上信息少的品牌，AI 说出来的具体介绍（年限、价格、规模等）很可能是编的，解读时请对照报告里的原始回答，不要当成事实，也不要据此认为网上已经有相关内容。`
-      : `Brand-name questions: ${b.count} (${b.answers} answers, excluded from the mention rate); sentiment +${b.sentiment.positive} =${b.sentiment.neutral} -${b.sentiment.negative}${b.descriptions.length ? '; AI describes it as: ' + b.descriptions.join(' | ') : ''}`);
+  if (zh) {
+    L.push(`AI 可见度监测「${d.brand}」完成（${d.stamp}）：问了 ${s.asked} 次，有效回答 ${s.total} 条。`);
+    L.push(`提及率（不带品牌名的问题里，AI 主动提到品牌的比例）：${s.rate}%（${s.rateTotal} 条回答里 ${s.byQuestion.filter((q) => !q.brandQ || !s.byQuestion.some((x) => !x.brandQ)).reduce((x, q) => x + q.mentioned, 0)} 条提到）。`);
+    if (s.brandQs) {
+      const b = s.brandQs;
+      L.push(`直接问品牌的问题 ${b.count} 个，${b.answers} 条回答（不计入提及率）：${b.unknown} 条表示不了解或查不到这个品牌${b.confused ? `，${b.confused} 条把它当成了同名的其他东西` : ''}；态度 正面 ${b.sentiment.positive}、中性 ${b.sentiment.neutral}、负面 ${b.sentiment.negative}。${b.descriptions.length ? 'AI 原话：' + b.descriptions.map((x) => `「${x}」`).join(' ') : ''}`);
+    }
+    L.push('\n各模型（不带品牌名的问题）：');
+    for (const m of s.byModel) L.push(`- ${m.model}：${m.total ? `提及率 ${m.rate}%（${m.mentioned}/${m.total}${m.low ? '，样本少' : ''}）${m.avgPos ? `，提到时平均排第 ${m.avgPos}` : ''}` : '没有有效回答'}${m.errors ? `，失败 ${m.errors} 次（${m.errorReason}）` : ''}`);
+    L.push('\n各问题：');
+    for (const q of s.byQuestion) L.push(`- ${q.brandQ ? '（品牌词）' : fmtRate(q.rate, zh) + `（${q.mentioned}/${q.total}）`}  ${q.question}`);
+    if (s.competitors.length) L.push('\n竞品出现率：' + s.competitors.map((c) => `${c.name} ${c.rate}%`).join('，'));
+    if (s.topRecommended.length) L.push('AI 推荐最多的名字（原文出现次数）：' + s.topRecommended.slice(0, 10).map((r) => `${r.name}（${r.n}）`).join('，'));
+    if (s.descriptions.length) L.push('行业问题里 AI 提到品牌时的原话：' + s.descriptions.map((x) => `「${x}」`).join(' '));
+    L.push(s.sources.length ? 'AI 回答里写出的信息来源：' + s.sources.map((x) => `${x.name}（${x.n}）`).join('，') : 'AI 回答里没有写出具体的信息来源。');
+    if (res.history.length > 1) L.push('\n同一组问题的历次提及率：' + res.history.slice(-8).map((h) => `${h.stamp.slice(5)} ${h.summary.rate}%`).join(' → '));
+    if (res.skipped?.length) L.push('跳过的模型：' + res.skipped.map((x) => `${x.name}（${x.why === 'plan' ? '需要更高会员' : '平台没有'}）`).join('、'));
+    L.push('\n数据可信度：\n' + qualityNotes(res, zh).map((x) => '- ' + x).join('\n'));
+    L.push('\n完整报告（每条原始回答都在里面，品牌名已高亮）：' + path.relative(path.dirname(path.dirname(res.projDir)), res.reportFile));
+    L.push(`\n解读要求：
+1. 只根据上面的数字和 AI 原话下结论，先说结论再说依据，引用数字时带上样本数（比如「20 条里 0 条」）。
+2. 样本少、失败多的部分不要下「表现好 / 差」的结论；提及率是 0 就直说 AI 目前不会主动推荐它。
+3. AI 原话只代表模型怎么说，不代表事实，也不说明网上已经有相关内容；网上信息少的品牌，AI 说出的具体介绍（年限、规模、价格）很可能是编的，要提醒用户。
+4. 再给 3～5 条具体建议（该在哪些平台发什么样的真实内容、官网和工商信息要补什么），提醒不要发虚假测评。
+5. 最后问用户：要不要用 geo_content 生成可发布的内容（需要先向用户要品牌真实信息），以及要不要设成定期监测（传 project 即可重复同一组问题）。`);
+  } else {
+    L.push(`AI visibility check for "${d.brand}" (${d.stamp}): ${s.total}/${s.asked} valid answers. Mention rate (questions without the brand name): ${s.rate}% of ${s.rateTotal}.`);
+    for (const m of s.byModel) L.push(`- ${m.model}: ${m.total ? `${m.rate}% (${m.mentioned}/${m.total})` : 'no valid answers'}${m.errors ? `, ${m.errors} failed` : ''}`);
+    for (const q of s.byQuestion) L.push(`- ${q.brandQ ? '(brand) ' : fmtRate(q.rate, zh) + ' '}${q.question}`);
+    if (s.brandQs) L.push(`Brand-name questions: ${s.brandQs.unknown}/${s.brandQs.answers} say they don't know the brand. Quotes: ${s.brandQs.descriptions.join(' | ')}`);
+    if (s.topRecommended.length) L.push('Most recommended: ' + s.topRecommended.slice(0, 10).map((r) => `${r.name} (${r.n})`).join(', '));
+    L.push('Data quality:\n' + qualityNotes(res, zh).map((x) => '- ' + x).join('\n'));
+    L.push('Report: ' + path.relative(path.dirname(path.dirname(res.projDir)), res.reportFile));
+    L.push('Interpret only what the numbers and quotes show, cite sample sizes, do not over-claim on small samples, treat AI descriptions of little-known brands as possibly invented, give 3-5 concrete suggestions (no fake reviews), then offer geo_content (ask for real facts first) and scheduled re-checks.');
   }
-  L.push(zh ? '\n各模型：' : '\nBy model:');
-  for (const m of s.byModel) L.push(`- ${m.model}：${zh ? '提及率' : 'mention'} ${m.rate}%（${m.mentioned}/${m.total}）${m.avgPos ? (zh ? `，平均排第 ${m.avgPos}，前三 ${m.top3}%` : `, avg #${m.avgPos}`) : ''}${m.errors ? (zh ? `，失败 ${m.errors}` : `, ${m.errors} failed`) : ''}`);
-  L.push(zh ? '\n各问题提及率：' : '\nBy question:');
-  for (const q of s.byQuestion) L.push(`- ${q.brandQ ? (zh ? '（品牌词）' : '(brand) ') : q.rate + '%  '}${q.question}`);
-  if (s.competitors.length) L.push((zh ? '\n竞品出现率：' : '\nCompetitors: ') + s.competitors.map((c) => `${c.name} ${c.rate}%`).join('，'));
-  if (s.topRecommended.length) L.push((zh ? '\nAI 推荐最多的名字：' : '\nMost recommended: ') + s.topRecommended.slice(0, 10).map((r) => `${r.name}（${r.n}）`).join('，'));
-  if (s.mentioned) L.push((zh ? `\n对品牌的态度：正面 ${s.sentiment.positive}，中性 ${s.sentiment.neutral}，负面 ${s.sentiment.negative}` : `\nSentiment: +${s.sentiment.positive} =${s.sentiment.neutral} -${s.sentiment.negative}`));
-  if (s.descriptions.length) L.push((zh ? 'AI 对品牌的描述：' : 'How AI describes it: ') + s.descriptions.map((x) => `「${x}」`).join(' '));
-  if (s.sources.length) L.push((zh ? '\nAI 提到的信息来源：' : '\nSources cited: ') + s.sources.map((x) => `${x.name}（${x.n}）`).join('，'));
-  if (res.history.length > 1) L.push((zh ? '\n历次总提及率：' : '\nHistory: ') + res.history.slice(-8).map((h) => `${h.stamp.slice(5)} ${h.summary.rate}%`).join(' → '));
-  if (res.skipped?.length) L.push((zh ? '\n跳过的模型：' : '\nSkipped: ') + res.skipped.map((x) => `${x.name}（${x.why === 'plan' ? (zh ? '需要更高会员' : 'plan') : zh ? '平台没有' : 'n/a'}）`).join('、'));
-  L.push((zh ? '\n完整报告（每条原始回答都在里面）：' : '\nFull report: ') + path.relative(path.dirname(path.dirname(res.projDir)), res.reportFile));
-  L.push(zh
-    ? '\n「提到」只按回答原文里有没有出现品牌名来算。请用通俗的话向用户解读：哪些模型、哪些问题下品牌表现好或差，AI 更常推荐谁，AI 引用了哪些来源；再给 3～5 条具体可做的建议（该在哪些平台发什么样的真实内容、官网要补什么信息），提醒不要发虚假测评。说明这是通过接口直接问模型的结果，和 App 里打开联网搜索时的回答可能不同。最后问用户：要不要用 geo_content 按提及率低的问题生成可发布的内容（需要先向用户要品牌真实信息），以及要不要设成定期监测（用 project 参数即可重复跑同一组问题）。'
-    : '\nExplain the results plainly, give 3-5 concrete content suggestions (no fake reviews), note that API answers may differ from the apps with web search, offer geo_content to draft publishable content for weak questions (ask for real brand facts first), and offer to schedule recurring checks (pass project to rerun).');
   return L.join('\n');
 }
 
@@ -316,17 +422,20 @@ function trendSvg(history) {
     ${xs.map((x, i) => (i === 0 || i === xs.length - 1 || history.length <= 8 ? `<text x="${x}" y="${H - 6}" class="axis" text-anchor="middle">${esc(sameDay ? history[i].stamp.slice(11, 16) : history[i].stamp.slice(5, 10))}</text>` : '')).join('')}
   </svg>`;
 }
-function renderReport(d, history, zh) {
+function renderReport(d, history, zh, notes = []) {
   const s = d.summary;
+  const names = [d.brand, ...(d.aliases || [])].filter((n) => n && n.length >= 2).sort((a, b) => b.length - a.length);
+  const hl = (text) => { let h = esc(text); for (const n of names) h = h.split(esc(n)).join(`<mark>${esc(n)}</mark>`); return h; };
+  const fr = (r) => (r == null ? '—' : bar(r));
   const t = zh
-    ? { title: 'AI 可见度报告', rate: '总提及率', answers: '有效回答', byModel: '各模型表现', model: '模型', mention: '提及率', avg: '平均排名', top3: '进前三', byQ: '各问题提及率', rec: 'AI 推荐最多的名字', comp: '竞品出现率', src: 'AI 提到的信息来源', desc: 'AI 怎么描述你', sent: '态度', pos: '正面', neu: '中性', neg: '负面', trend: '历次总提及率', raw: '全部原始回答', none: '无', note: '说明：通过接口直接提问各模型（没有打开联网搜索），和在 App 里提问的结果可能不同。每个问题问了多次，按统计结果看更可靠。', yes: '提到', no: '没提到', pos2: '第 {n} 位' }
-    : { title: 'AI Visibility Report', rate: 'Mention rate', answers: 'Answers', byModel: 'By model', model: 'Model', mention: 'Mention', avg: 'Avg rank', top3: 'Top 3', byQ: 'By question', rec: 'Most recommended', comp: 'Competitors', src: 'Sources cited', desc: 'How AI describes you', sent: 'Sentiment', pos: 'Positive', neu: 'Neutral', neg: 'Negative', trend: 'Mention rate over time', raw: 'All answers', none: 'None', note: 'Answers come from the model APIs without web search and may differ from the apps.', yes: 'Mentioned', no: 'Not mentioned', pos2: '#{n}' };
+    ? { title: 'AI 可见度报告', rate: '提及率（不带品牌名的问题）', answers: '提到 / 回答数', quality: '数据可信度', brandQ: '直接问品牌时 AI 怎么说', unknown: '表示不了解', confusedT: '同名混淆', lowT: '样本少', failT: '全部失败', n: '{n} 条', byModel: '各模型表现', model: '模型', mention: '提及率', avg: '平均排名', top3: '进前三', byQ: '各问题提及率', rec: 'AI 推荐最多的名字', comp: '竞品出现率', src: 'AI 提到的信息来源', desc: '行业问题里 AI 提到你的原话', sent: '态度', pos: '正面', neu: '中性', neg: '负面', trend: '历次总提及率', raw: '全部原始回答', none: '无', note: '说明：通过接口直接提问各模型（没有打开联网搜索），和在 App 里提问的结果可能不同。每个问题问了多次，按统计结果看更可靠。', yes: '提到', no: '没提到', pos2: '第 {n} 位' }
+    : { title: 'AI Visibility Report', rate: 'Mention rate (no brand name in question)', answers: 'Mentioned / answers', quality: 'Data quality', brandQ: 'When asked about the brand directly', unknown: 'Says it does not know', confusedT: 'Different entity', lowT: 'small sample', failT: 'all failed', n: '{n}', byModel: 'By model', model: 'Model', mention: 'Mention', avg: 'Avg rank', top3: 'Top 3', byQ: 'By question', rec: 'Most recommended', comp: 'Competitors', src: 'Sources cited', desc: 'How AI describes you', sent: 'Sentiment', pos: 'Positive', neu: 'Neutral', neg: 'Negative', trend: 'Mention rate over time', raw: 'All answers', none: 'None', note: 'Answers come from the model APIs without web search and may differ from the apps.', yes: 'Mentioned', no: 'Not mentioned', pos2: '#{n}' };
   const answersHtml = d.questions.map((q) => {
     const as = d.answers.filter((a) => a.question === q);
     return `<details><summary>${esc(q)} <em>${as.filter((a) => a.mentioned).length}/${as.filter((a) => a.answer).length}</em></summary>${as.map((a) => `
-      <div class="ans"><div class="ah"><b>${esc(a.modelLabel)}</b> #${a.round} <span class="tag ${a.mentioned ? 'ok' : ''}">${a.error ? esc(a.error) : a.mentioned ? t.yes + (a.position ? ' · ' + t.pos2.replace('{n}', a.position) : '') : t.no}</span></div>
+      <div class="ans"><div class="ah"><b>${esc(a.modelLabel)}</b> #${a.round} <span class="tag ${a.mentioned ? 'ok' : ''}">${a.error ? esc(a.error) : a.confused ? t.confusedT : a.mentioned ? t.yes + (a.position ? ' · ' + t.pos2.replace('{n}', a.position) : '') + (a.unknown ? ' · ' + t.unknown : '') : t.no}</span>${a.answer && a.analyzed === false ? ` <span class="tag">${zh ? '自动分析失败' : 'analysis failed'}</span>` : ''}</div>
       ${a.recommended?.length ? `<div class="rec">${a.recommended.map((r) => `<span>${esc(r)}</span>`).join('')}</div>` : ''}
-      <pre>${esc(a.answer)}</pre></div>`).join('')}</details>`;
+      ${a.quote ? `<div class="quote">${zh ? 'AI 原话' : 'Quote'}：「${esc(a.quote)}」</div>` : ''}<pre>${hl(a.answer)}</pre></div>`).join('')}</details>`;
   }).join('');
   return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(d.brand)} · ${t.title}</title><style>
@@ -343,21 +452,23 @@ main{max-width:920px;margin:0 auto}h1{font-size:22px;margin:0 0 2px}.sub{color:v
 details{border-top:1px solid var(--border);padding:8px 0}summary{cursor:pointer;font-weight:600}summary em{font-style:normal;color:var(--muted);font-weight:400;margin-left:6px}
 .ans{margin:10px 0 0 12px;padding-left:10px;border-left:2px solid var(--border)}.ah{font-size:13px}.tag{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--bg);color:var(--muted);margin-left:6px}.tag.ok{color:var(--ok)}
 pre{white-space:pre-wrap;word-break:break-word;font:12.5px/1.55 inherit;background:var(--bg);border-radius:8px;padding:8px 10px;max-height:260px;overflow:auto;margin:6px 0}
-.note{color:var(--muted);font-size:12px}.neg{color:var(--warn)}.posi{color:var(--ok)}
+.note{color:var(--muted);font-size:12px}mark{background:#fde7a8;color:inherit;border-radius:3px}@media (prefers-color-scheme:dark){mark{background:#6b5418}}.quote{font-size:12.5px;margin:4px 0}.q li{margin:2px 0}.warnc{border-color:var(--accent)}.neg{color:var(--warn)}.posi{color:var(--ok)}
 </style></head><body><main>
 <h1>${esc(d.brand)} · ${t.title}</h1><div class="sub">${esc(d.stamp)} · ${d.models.map((m) => esc(m.label)).join(' / ')} · ${d.questions.length} × ${d.repeats}</div>
-<div class="kpis"><div class="kpi"><b>${s.rate}%</b><span>${t.rate}</span></div><div class="kpi"><b>${s.mentioned}/${s.total}</b><span>${t.answers}</span></div>
+<div class="kpis"><div class="kpi"><b>${s.rate}%</b><span>${t.rate}</span></div><div class="kpi"><b>${s.byQuestion.filter((q) => !q.brandQ || !s.byQuestion.some((x) => !x.brandQ)).reduce((x, q) => x + q.mentioned, 0)}/${s.rateTotal}</b><span>${t.answers}</span></div>
 <div class="kpi"><b><span class="posi">${s.sentiment.positive}</span> / ${s.sentiment.neutral} / <span class="neg">${s.sentiment.negative}</span></b><span>${t.sent}：${t.pos} / ${t.neu} / ${t.neg}</span></div></div>
+<div class="card warnc"><h2>${t.quality}</h2><ul class="q">${notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>
+${s.brandQs ? `<div class="card"><h2>${t.brandQ}</h2><p>${s.brandQs.answers} ${zh ? '条回答' : 'answers'} · ${t.unknown} ${s.brandQs.unknown}${s.brandQs.confused ? ` · ${t.confusedT} ${s.brandQs.confused}` : ''} · ${t.pos} ${s.brandQs.sentiment.positive} / ${t.neu} ${s.brandQs.sentiment.neutral} / ${t.neg} ${s.brandQs.sentiment.negative}</p>${s.brandQs.descriptions.length ? `<ul>${s.brandQs.descriptions.map((x) => `<li>「${esc(x)}」</li>`).join('')}</ul>` : ''}</div>` : ''}
 ${history.length > 1 ? `<div class="card"><h2>${t.trend}</h2>${trendSvg(history)}</div>` : ''}
 <div class="card"><h2>${t.byModel}</h2><table><tr><th>${t.model}</th><th>${t.mention}</th><th>${t.avg}</th><th>${t.top3}</th></tr>
-${s.byModel.map((m) => `<tr><td>${esc(m.model)}</td><td>${bar(m.rate)}</td><td>${m.avgPos ?? '—'}</td><td>${m.top3}%</td></tr>`).join('')}</table></div>
-<div class="card"><h2>${t.byQ}</h2><table>${s.byQuestion.map((q) => `<tr><td>${esc(q.question)}${q.brandQ ? ` <span class="tag">${zh ? '品牌词，不计入提及率' : 'brand name, excluded'}</span>` : ''}</td><td style="width:200px">${bar(q.rate, q.brandQ ? 'var(--muted)' : undefined)}</td></tr>`).join('')}</table></div>
+${s.byModel.map((m) => `<tr><td>${esc(m.model)}<br><span class="note">${m.total ? t.n.replace('{n}', m.total) + (m.low ? ' · ' + t.lowT : '') : t.failT}${m.errors ? ` · ${zh ? '失败' : 'failed'} ${m.errors}` : ''}</span></td><td>${m.total ? fr(m.rate) : '—'}</td><td>${m.avgPos ?? '—'}</td><td>${m.top3 == null ? '—' : m.top3 + '%'}</td></tr>`).join('')}</table></div>
+<div class="card"><h2>${t.byQ}</h2><table>${s.byQuestion.map((q) => `<tr><td>${esc(q.question)}${q.brandQ ? ` <span class="tag">${zh ? '品牌词，不计入提及率' : 'brand name, excluded'}</span>` : ''}</td><td style="width:200px">${q.rate == null ? '—' : bar(q.rate, q.brandQ ? 'var(--muted)' : undefined)}<span class="note">${t.n.replace('{n}', q.total)}</span></td></tr>`).join('')}</table></div>
 ${s.competitors.length ? `<div class="card"><h2>${t.comp}</h2><table><tr><td>${esc(d.brand)}</td><td style="width:240px">${bar(s.rate)}</td></tr>${s.competitors.map((c) => `<tr><td>${esc(c.name)}</td><td>${bar(c.rate, 'var(--muted)')}</td></tr>`).join('')}</table></div>` : ''}
 <div class="card"><h2>${t.rec}</h2><div class="chips">${s.topRecommended.length ? s.topRecommended.map((r) => `<span>${esc(r.name)} · ${r.n}</span>`).join('') : t.none}</div></div>
-${s.descriptions.length ? `<div class="card"><h2>${t.desc}</h2><ul>${s.descriptions.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+${s.descriptions.length ? `<div class="card"><h2>${t.desc}</h2><ul>${s.descriptions.map((x) => `<li>「${esc(x)}」</li>`).join('')}</ul></div>` : ''}
 <div class="card"><h2>${t.src}</h2><div class="chips">${s.sources.length ? s.sources.map((x) => `<span>${esc(x.name)} · ${x.n}</span>`).join('') : t.none}</div></div>
 <div class="card"><h2>${t.raw}</h2>${answersHtml}</div>
-<p class="note">${t.note}</p></main></body></html>`;
+</main></body></html>`;
 }
 
-module.exports = { run, textSummary, resolveModels, ruleAnalyze, summarize, renderReport, DEFAULT_MODELS };
+module.exports = { run, textSummary, qualityNotes, resolveModels, ruleAnalyze, groundAnswer, regroundRun, summarize, renderReport, DEFAULT_MODELS, ANALYSIS_VERSION };
