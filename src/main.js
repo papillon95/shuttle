@@ -2369,17 +2369,33 @@ async function geoContentTool(args, root, signal) {
 }
 
 // ---------- 配音 ----------
-/** 找电脑上的 ffmpeg（转 MP3 用），找不到返回 null */
-let ffmpegPath;
+/**
+ * 找电脑上的 ffmpeg（转 MP3 用），找不到返回 null。
+ * 只记住找到的结果；没找到每次都重新找——用户可能刚让 Shuttle 用 brew / winget 装好，不用重启就能用。
+ * 除了 PATH，还查常见安装位置：从访达 / 开始菜单启动的程序拿不到终端里的 PATH，winget 装完后正在运行的程序也拿不到新的 PATH。
+ */
+let ffmpegPath = null;
+function ffmpegCandidates() {
+  if (process.platform !== 'win32') return ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/local/bin/ffmpeg', '/usr/bin/ffmpeg', '/snap/bin/ffmpeg'];
+  const la = process.env.LOCALAPPDATA || path.join(require('os').homedir(), 'AppData', 'Local');
+  const out = [path.join(la, 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe'), path.join(require('os').homedir(), 'scoop', 'shims', 'ffmpeg.exe'), 'C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe', 'C:\\ffmpeg\\bin\\ffmpeg.exe'];
+  // winget 的 Gyan.FFmpeg 包：…\WinGet\Packages\Gyan.FFmpeg_xxx\ffmpeg-版本-full_build\bin\ffmpeg.exe
+  try {
+    const pk = path.join(la, 'Microsoft', 'WinGet', 'Packages');
+    for (const d of fs.readdirSync(pk).filter((x) => /^Gyan\.FFmpeg/i.test(x))) {
+      for (const sub of fs.readdirSync(path.join(pk, d))) out.push(path.join(pk, d, sub, 'bin', 'ffmpeg.exe'));
+    }
+  } catch {}
+  return out;
+}
 function findFfmpeg() {
-  if (ffmpegPath !== undefined) return ffmpegPath;
-  const cands = process.platform === 'win32' ? ['ffmpeg.exe'] : ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg'];
-  ffmpegPath = cands.find((c) => path.isAbsolute(c) && fs.existsSync(c)) || null;
+  if (ffmpegPath && fs.existsSync(ffmpegPath)) return ffmpegPath;
+  ffmpegPath = ffmpegCandidates().find((c) => fs.existsSync(c)) || null;
   if (!ffmpegPath) {
     try {
       const r = require('child_process').spawnSync(process.platform === 'win32' ? 'where' : 'which', ['ffmpeg'], { encoding: 'utf8', timeout: 3000 });
       const p = (r.stdout || '').split(/\r?\n/)[0].trim();
-      if (r.status === 0 && p) ffmpegPath = p;
+      if (r.status === 0 && p && fs.existsSync(p)) ffmpegPath = p;
     } catch {}
   }
   return ffmpegPath;

@@ -314,7 +314,9 @@ async function run(args, root, deps) {
     else {
       outAbs = abs.replace(/\.mp3$/i, '.wav');
       fs.renameSync(wavTmp, outAbs);
-      note = zh ? '电脑上没有可用的 ffmpeg，先保存成了 WAV（可以装 ffmpeg 后转成 MP3）' : 'ffmpeg not found; saved as WAV';
+      note = zh
+        ? `电脑上没有找到 ffmpeg，先保存成了 WAV。如果用户需要 MP3，可以问用户要不要安装 ffmpeg（${process.platform === 'win32' ? 'Windows：winget install Gyan.FFmpeg' : 'Mac：brew install ffmpeg，没有 Homebrew 的话需要用户先在终端里自己安装 Homebrew'}），装好后不用重启，再配一次就会存成 MP3（已配过的句子有缓存，不会重复扣额度）`
+        : `ffmpeg not found; saved as WAV. If the user wants MP3, offer to install ffmpeg (${process.platform === 'win32' ? 'winget install Gyan.FFmpeg' : 'brew install ffmpeg'}); no restart needed, and re-running reuses cached sentences.`;
     }
   } else fs.writeFileSync(abs, joined.wav);
   let srtAbs = null;
