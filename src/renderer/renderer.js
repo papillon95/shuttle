@@ -2183,6 +2183,18 @@ $('fontFamily').onchange = async (e) => {
   settings = await window.api.saveSettings({ fontFamily: e.target.value });
 };
 
+// 「更多模型」输入框 → 模型 ID 列表。用户常把显示名（如「Gemma 4 31B」）当模型名填进来：
+// 先按逗号/换行分，能对上内置模型显示名的换成它的 ID；其余按空格再分（模型 ID 里没有空格）
+function parseExtraModels(value, p) {
+  const norm = (x) => String(x || '').toLowerCase().replace(/[（(].*$/, '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  for (const part of String(value || '').replace(/[（(][^）)]*[）)]/g, '').split(/[,，;；\n]+/).map((x) => x.trim()).filter(Boolean)) {
+    const hit = (p?.models || []).find((m) => [m.id, m.label, m.labelEn].some((l) => l && norm(l) === norm(part)));
+    if (hit) out.push(hit.id);
+    else out.push(...part.split(/\s+/).filter(Boolean));
+  }
+  return [...new Set(out)];
+}
 function openSettings(tab = 'models') {
   const list = $('keyList');
   list.innerHTML = '';
@@ -2203,7 +2215,7 @@ function openSettings(tab = 'models') {
       out.className = 'test-result';
       out.textContent = T('testing');
       const key = row.querySelector('[data-key]').value.trim();
-      const firstExtra = row.querySelector('[data-models]').value.split(/[,，\s]+/).filter(Boolean)[0];
+      const firstExtra = parseExtraModels(row.querySelector('[data-models]').value, p)[0];
       const r = await window.api.testProvider(id, {
         key: key || undefined,
         model: firstExtra || undefined, // 填了「额外模型名」就测第一个，方便确认模型名对不对
@@ -2259,7 +2271,7 @@ $('settingsSave').onclick = async () => {
     if (i.value.trim()) keys[i.dataset.key] = i.value.trim();
   });
   document.querySelectorAll('#keyList input[data-models]').forEach((i) => {
-    extraModels[i.dataset.models] = i.value.split(/[,，\s]+/).filter(Boolean);
+    extraModels[i.dataset.models] = parseExtraModels(i.value, settings.providers[i.dataset.models]);
   });
   const clampNum = (v, lo, hi, d) => Math.min(hi, Math.max(lo, Number(v) || d));
   settings = await window.api.saveSettings({
