@@ -78,11 +78,12 @@ const ANALYZE_PROMPT = (brand, aliases, competitors, question, answer) => `下�
 竞品：${competitors.length ? competitors.join('、') : '无'}
 
 JSON 字段：
-- recommended: 回答里推荐或列举的品牌 / 公司 / 产品名，按出现顺序，最多 10 个，字符串数组
-- brand_mentioned: 是否提到了要关注的品牌（含别名），true / false
+- recommended: 回答里推荐或列举的品牌 / 公司 / 产品名（照原文抄，不要添加回答里没有的名字），按出现顺序，最多 10 个，字符串数组
+- brand_mentioned: 回答原文里是否出现了要关注的品牌名（含别名），true / false；只是提到类似的公司不算
 - brand_position: 要关注的品牌在 recommended 里是第几个（从 1 开始），没提到就是 null
 - sentiment: 回答对「要关注的品牌」本身的态度，"positive" / "neutral" / "negative"，没提到就是 null。只看直接针对这个品牌的句子，别的品牌（包括竞品）的好坏评价不要算进来
 - brand_summary: 回答里直接描述「要关注的品牌」的话，概括成一句（30 字内），没提到就是 ""。不要把描述其他品牌的话安到它头上；如果回答把这个名字理解成了别的东西（比如同名的其他公司、产品或工具），照实写出来
+- brand_unknown: 回答是否表示不了解 / 查不到 / 不确定这个品牌（只给通用建议、或说「可能是」「需要确认是哪家」），true / false
 - sources: 回答里提到的信息来源（网址、网站或平台名，如 知乎、某公众号、官网），字符串数组，没有就是 []
 
 回答：
@@ -172,12 +173,24 @@ async function run(args, root, deps) {
     }
     ad++;
     deps.progress(zh ? `正在分析回答 ${ad}/${ok.length}…` : `Analyzing ${ad}/${ok.length}…`);
-    // 规则判断「有没有提到」最可靠（直接搜名字）；排名、推荐名单、态度用模型抽取的，抽取失败用规则的
-    a.mentioned = rule.mentioned || !!llm?.brand_mentioned;
-    a.position = a.mentioned ? (Number.isInteger(llm?.brand_position) ? llm.brand_position : rule.position || null) : null;
-    a.recommended = Array.isArray(llm?.recommended) ? llm.recommended.map(String).slice(0, 10) : [];
+    // 「有没有提到」只认原文里搜得到品牌名（小模型对陌生品牌很容易误报「提到了」，还会把描述别家的话安到它头上）；
+    // 推荐名单只保留原文里确实出现的名字；没提到品牌时，排名、态度、描述一律不要
+    a.mentioned = rule.mentioned;
+    const inText = (n) => {
+      const k = norm(String(n).replace(/[（(].*?[）)]/g, ''));
+      return k.length >= 2 && norm(a.answer).includes(k);
+    };
+    a.recommended = Array.isArray(llm?.recommended) ? llm.recommended.map(String).filter(inText).slice(0, 10) : [];
+    const llmPos = a.recommended.findIndex((n) => findName(n, brandNames) >= 0);
+    a.position = a.mentioned ? (llmPos >= 0 ? llmPos + 1 : rule.position || null) : null;
     a.sentiment = a.mentioned ? (['positive', 'neutral', 'negative'].includes(llm?.sentiment) ? llm.sentiment : 'neutral') : null;
     a.summary = a.mentioned ? String(llm?.brand_summary || '').slice(0, 80) : '';
+    a.unknown = a.mentioned && !!llm?.brand_unknown;
+    if (a.unknown) {
+      // AI 自己都说不了解，态度算中性，描述只记「不了解」（避免把它顺口编的话当成 AI 的认知）
+      a.sentiment = 'neutral';
+      a.summary = zh ? 'AI 表示不了解 / 查不到这个品牌' : 'AI says it does not know this brand';
+    }
     a.sources = Array.isArray(llm?.sources) ? llm.sources.map(String).slice(0, 10) : [];
     a.competitorHits = rule.competitors;
   }, deps.signal);
@@ -250,6 +263,7 @@ function summarize(d) {
     answers: valid.filter((a) => isBrandQ.has(a.question)).length,
     sentiment: { positive: brandHits.filter((a) => a.sentiment === 'positive').length, neutral: brandHits.filter((a) => a.sentiment === 'neutral').length, negative: brandHits.filter((a) => a.sentiment === 'negative').length },
     descriptions: [...new Set(brandHits.map((a) => a.summary).filter(Boolean))].slice(0, 8),
+    unknown: brandHits.filter((a) => a.unknown).length,
   } : null;
   return { total: valid.length, errors: d.answers.length - valid.length, mentioned: hits.length, rate: pct(rateBase.filter((a) => a.mentioned).length, rateBase.length), rateTotal: rateBase.length, brandQs, byModel, byQuestion, topRecommended, competitors: comp, sources, sentiment: sent, descriptions };
 }
@@ -263,7 +277,7 @@ function textSummary(res, zh = true) {
   if (s.brandQs) {
     const b = s.brandQs;
     L.push(zh
-      ? `直接问品牌的问题 ${b.count} 个（${b.answers} 条回答，不计入提及率）：态度 正面 ${b.sentiment.positive}、中性 ${b.sentiment.neutral}、负面 ${b.sentiment.negative}${b.descriptions.length ? '；AI 这样介绍它：' + b.descriptions.map((x) => `「${x}」`).join(' ') : ''}`
+      ? `直接问品牌的问题 ${b.count} 个（${b.answers} 条回答，不计入提及率）：其中 ${b.unknown || 0} 条表示不了解 / 查不到这个品牌；态度 正面 ${b.sentiment.positive}、中性 ${b.sentiment.neutral}、负面 ${b.sentiment.negative}${b.descriptions.length ? '；AI 这样介绍它：' + b.descriptions.map((x) => `「${x}」`).join(' ') : ''}。注意：网上信息少的品牌，AI 说出来的具体介绍（年限、价格、规模等）很可能是编的，解读时请对照报告里的原始回答，不要当成事实，也不要据此认为网上已经有相关内容。`
       : `Brand-name questions: ${b.count} (${b.answers} answers, excluded from the mention rate); sentiment +${b.sentiment.positive} =${b.sentiment.neutral} -${b.sentiment.negative}${b.descriptions.length ? '; AI describes it as: ' + b.descriptions.join(' | ') : ''}`);
   }
   L.push(zh ? '\n各模型：' : '\nBy model:');
@@ -279,7 +293,7 @@ function textSummary(res, zh = true) {
   if (res.skipped?.length) L.push((zh ? '\n跳过的模型：' : '\nSkipped: ') + res.skipped.map((x) => `${x.name}（${x.why === 'plan' ? (zh ? '需要更高会员' : 'plan') : zh ? '平台没有' : 'n/a'}）`).join('、'));
   L.push((zh ? '\n完整报告（每条原始回答都在里面）：' : '\nFull report: ') + path.relative(path.dirname(path.dirname(res.projDir)), res.reportFile));
   L.push(zh
-    ? '\n请用通俗的话向用户解读：哪些模型、哪些问题下品牌表现好或差，AI 更常推荐谁，AI 引用了哪些来源；再给 3～5 条具体可做的建议（该在哪些平台发什么样的真实内容、官网要补什么信息），提醒不要发虚假测评。说明这是通过接口直接问模型的结果，和 App 里打开联网搜索时的回答可能不同。最后问用户：要不要用 geo_content 按提及率低的问题生成可发布的内容（需要先向用户要品牌真实信息），以及要不要设成定期监测（用 project 参数即可重复跑同一组问题）。'
+    ? '\n「提到」只按回答原文里有没有出现品牌名来算。请用通俗的话向用户解读：哪些模型、哪些问题下品牌表现好或差，AI 更常推荐谁，AI 引用了哪些来源；再给 3～5 条具体可做的建议（该在哪些平台发什么样的真实内容、官网要补什么信息），提醒不要发虚假测评。说明这是通过接口直接问模型的结果，和 App 里打开联网搜索时的回答可能不同。最后问用户：要不要用 geo_content 按提及率低的问题生成可发布的内容（需要先向用户要品牌真实信息），以及要不要设成定期监测（用 project 参数即可重复跑同一组问题）。'
     : '\nExplain the results plainly, give 3-5 concrete content suggestions (no fake reviews), note that API answers may differ from the apps with web search, offer geo_content to draft publishable content for weak questions (ask for real brand facts first), and offer to schedule recurring checks (pass project to rerun).');
   return L.join('\n');
 }
