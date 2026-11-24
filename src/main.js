@@ -1,7 +1,7 @@
 const convsync = require('./convsync');
 const remote = require('./remote');
 const experts = require('./experts');
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, nativeTheme, session, systemPreferences, Notification, clipboard, nativeImage, Menu, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, nativeTheme, session, systemPreferences, Notification, clipboard, nativeImage, Menu, powerSaveBlocker, net } = require('electron');
 const path = require('path');
 const APP_ICON = path.join(__dirname, 'assets', 'icon.png');
 const fs = require('fs');
@@ -825,7 +825,7 @@ async function callModel(settings, signal, c) {
     } else throw new Error(T('apiError', { status: res.status, body: errText.slice(0, 500) }));
     res = await postRetry(() => post(usageOpt), signal);
   }
-  if (!res.ok) throw new Error(T('apiError', { status: res.status, body: (await res.text()).slice(0, 500) }));
+  if (!res.ok) throw new Error(providerErrorText(res.status, await res.text(), 500));
   // 平台模式：选的模型暂时不可用，服务端自动换了备用模型（响应头告诉我们换成了哪个）
   if (!settings.useOwnKey && res.headers.get('x-shuttle-fallback')) {
     let label = res.headers.get('x-shuttle-fallback');
@@ -3058,7 +3058,7 @@ async function quickAskModel(messages, onDelta, signal) {
     body: JSON.stringify({ model, messages, temperature: 0.3, stream: true }),
     signal,
   });
-  if (!res.ok) throw new Error(T('apiError', { status: res.status, body: (await res.text()).slice(0, 300) }));
+  if (!res.ok) throw new Error(providerErrorText(res.status, await res.text(), 300));
   // 平台业务错误（额度不足等）是普通 JSON
   if (!(res.headers.get('content-type') || '').includes('event-stream')) {
     const data = JSON.parse(await res.text());
@@ -3391,7 +3391,7 @@ ipcMain.handle('settings:test', async (_e, pid, override) => {
       })
     );
     const text = await res.text();
-    if (!res.ok) return { ok: false, msg: `${res.status}：${text.slice(0, 200)}`, model };
+    if (!res.ok) return { ok: false, msg: REGION_BLOCKED.test(text) ? providerErrorText(res.status, text, 200) : `${res.status}：${text.slice(0, 200)}`, model };
     return { ok: true, msg: T('testOk', { model, ms: Date.now() - t0 }) };
   } catch (e) {
     return { ok: false, msg: e.name === 'TimeoutError' ? T('testTimeout') : e.message };
@@ -4399,7 +4399,39 @@ ipcMain.handle('update:restart', () => {
   return true;
 });
 
+// 厂商因为地区限制拒绝（Gemini / OpenAI / Claude 等不对中国大陆、香港、澳门开放）：换成看得懂的说明，原始报错附在后面
+const REGION_BLOCKED = /User location is not supported|unsupported_country_region_territory|Country, region, or territory not supported|not available in your (?:country|region)|Request not allowed.*region|location is not supported/i;
+function providerErrorText(status, body, max = 500) {
+  const b = String(body || '').slice(0, max);
+  return REGION_BLOCKED.test(b) ? T('regionBlocked') + `（${status}：${b.slice(0, 160)}）` : T('apiError', { status, body: b });
+}
+// 访问外部服务（各家模型、远程 MCP、GitHub 等）时跟浏览器一样走系统代理：
+// Node 自带的 fetch 不管系统代理，开着 VPN「系统代理」模式时会直连出去（比如出口在香港，Gemini / OpenAI 就会以地区不支持为由拒绝）。
+// Electron 的 net.fetch 用的是 Chromium 的网络栈，自动跟随系统代理、PAC 和例外列表；没开代理时和直连一样。
+// 平台服务器、腾讯云存储（都在国内）和本机 / 局域网地址仍用 Node 的 fetch：直连更快，本地服务也不受 Chromium 的端口限制。
+const nodeFetch = globalThis.fetch;
+function directHost(input) {
+  let h;
+  try {
+    h = new URL(typeof input === 'string' ? input : input?.url || String(input)).hostname.toLowerCase();
+  } catch {
+    return true;
+  }
+  if (h === 'localhost' || h.endsWith('.localhost') || h === '[::1]' || h === '::1' || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || h.endsWith('.local')) return true;
+  if (h.endsWith('.myqcloud.com') || h.endsWith('richbrian.site')) return true;
+  try {
+    const own = new URL(loadSettings().serverUrl || DEFAULT_SERVER).hostname.toLowerCase();
+    if (h === own) return true;
+  } catch {}
+  return false;
+}
+function installProxyFetch() {
+  if (!net?.fetch) return;
+  globalThis.fetch = (input, init) => (directHost(input) ? nodeFetch(input, init) : net.fetch(input, init));
+}
+
 app.whenReady().then(() => {
+  installProxyFetch();
   // 运行时的 Dock 图标用新图标（安装包里的图标要等下次全量安装包才会换）
   if (process.platform === 'darwin') {
     try {
