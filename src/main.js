@@ -9,6 +9,7 @@ const BUILTIN_PROVIDERS = require('./providers');
 const tools = require('./tools');
 const geo = require('./geo');
 const geoContent = require('./geo-content');
+const tts = require('./tts');
 const docs = require('./docs');
 const updater = require('./updater');
 const mcp = require('./mcp');
@@ -199,6 +200,21 @@ async function refreshCatalog() {
   fs.writeFileSync(CATALOG_FILE(), JSON.stringify(catalogCache));
   imageModelsCache = r.data.imageModels || [];
   fs.writeFileSync(IMAGE_MODELS_FILE(), JSON.stringify(imageModelsCache));
+  ttsModelsCache = r.data.ttsModels || [];
+  fs.writeFileSync(TTS_MODELS_FILE(), JSON.stringify(ttsModelsCache));
+}
+// 配音模型（服务器目录里的 ttsModels），目前是千问 TTS
+const TTS_MODELS_FILE = () => path.join(app.getPath('userData'), 'tts-models.json');
+let ttsModelsCache;
+function ttsModels() {
+  if (ttsModelsCache === undefined) {
+    try {
+      ttsModelsCache = JSON.parse(fs.readFileSync(TTS_MODELS_FILE(), 'utf8'));
+    } catch {
+      ttsModelsCache = [];
+    }
+  }
+  return ttsModelsCache || [];
 }
 
 // 生图模型（服务器目录里的 imageModels），目前是豆包 Seedream
@@ -958,6 +974,29 @@ const IMAGE_BATCH_TOOL = {
     },
   },
 };
+// 配音：文字转语音，按句子合成后拼成一个音频文件，可选生成 SRT 字幕（见 tts.js）
+const TTS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'text_to_speech',
+    description:
+      '把文字配成语音（AI 配音），保存成音频文件（WAV，路径以 .mp3 结尾且电脑上有 ffmpeg 时存成 MP3），在对话里可以直接播放。适合短视频口播、课程讲解、广告配音、有声内容。' +
+      '按句子逐句合成，句子之间自然停顿；subtitles 为 true 时按真实时长同时生成同名 .srt 字幕（做视频时建议打开）。' +
+      '按字数扣额度（汉字约每千字 6 万 token）。用户没指定音色时，按内容挑一个合适的并告诉用户还能换哪些。配之前先把要读的文字定稿（数字、英文、专有名词写成希望读出来的样子）。不支持调语速、音调和情绪，想要停顿更长可以拆成更短的句子或用句号；不要答应用户做不到的调整。' +
+      '音色：' + Object.entries(tts.VOICES).map(([k, v]) => `${k}（${v}）`).join('；'),
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '要朗读的文字（和 text_file 二选一）' },
+        text_file: { type: 'string', description: '当前文件夹里的文字文件路径（.txt / .md），读取其中全部文字' },
+        voice: { type: 'string', enum: Object.keys(tts.VOICES), description: '音色，默认 Cherry' },
+        language: { type: 'string', enum: Object.keys(tts.LANGS), description: '文字的语言，不填自动判断；方言音色读中文' },
+        path: { type: 'string', description: '保存路径（相对当前文件夹），默认 audio/shuttle-时间.wav' },
+        subtitles: { type: 'boolean', description: '是否同时生成 SRT 字幕，默认 false' },
+      },
+    },
+  },
+};
 // AI 可见度监测（GEO）：拿潜在客户会问的问题去问多个大模型，看有没有推荐用户的品牌（见 geo.js）
 const GEO_TOOL = {
   type: 'function',
@@ -1470,7 +1509,7 @@ function toolDefinitions(settings, c) {
 }
 function toolDefinitionsAll(settings) {
   // 生图始终走平台（扣会员额度），和对话用的是平台模型还是自己的 Key 无关
-  const base = [...tools.definitions, ...(currentUser && imageModels().length ? [IMAGE_TOOL, IMAGE_BATCH_TOOL] : []), ...(currentUser ? [GEO_TOOL, GEO_CONTENT_TOOL] : [])];
+  const base = [...tools.definitions, ...(currentUser && imageModels().length ? [IMAGE_TOOL, IMAGE_BATCH_TOOL] : []), ...(currentUser && ttsModels().length ? [TTS_TOOL] : []), ...(currentUser ? [GEO_TOOL, GEO_CONTENT_TOOL] : [])];
   const expertTool = settings.expertAuto !== false && expertsAvail.length ? [expertToolDef()] : [];
   return [...base, ...expertTool, ...BROWSER_TOOLS, SCHEDULE_TOOL, ...MCP_ADMIN_TOOLS, ...(hasEnabledSkills() ? [SKILL_TOOL] : []), ...(mcp.lazyServers().length ? MCP_LAZY_TOOLS : []), ...mcp.toolDefinitions()];
 }
@@ -2329,10 +2368,70 @@ async function geoContentTool(args, root, signal) {
   return geoContent.textSummary(res, lang !== 'en') + (await autoPreview(res.indexFile));
 }
 
+// ---------- 配音 ----------
+/** 找电脑上的 ffmpeg（转 MP3 用），找不到返回 null */
+let ffmpegPath;
+function findFfmpeg() {
+  if (ffmpegPath !== undefined) return ffmpegPath;
+  const cands = process.platform === 'win32' ? ['ffmpeg.exe'] : ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg'];
+  ffmpegPath = cands.find((c) => path.isAbsolute(c) && fs.existsSync(c)) || null;
+  if (!ffmpegPath) {
+    try {
+      const r = require('child_process').spawnSync(process.platform === 'win32' ? 'where' : 'which', ['ffmpeg'], { encoding: 'utf8', timeout: 3000 });
+      const p = (r.stdout || '').split(/\r?\n/)[0].trim();
+      if (r.status === 0 && p) ffmpegPath = p;
+    } catch {}
+  }
+  return ffmpegPath;
+}
+async function textToSpeech(args, root, callId, signal) {
+  if (!currentUser) return T('imageNeedsPlatform');
+  const m = ttsModels()[0];
+  if (!m) return T('errorPrefix') + T('err_model_unavailable');
+  const res = await tts.run(args || {}, root, {
+    model: m,
+    lang,
+    signal,
+    needConfirm: needsConfirm('write_file'),
+    cacheDir: path.join(app.getPath('userData'), 'tts-cache'),
+    remaining: async () => {
+      const q = await api('/aidesk/billing/quota', { token: token() });
+      return q.ok ? Number(q.data.remaining) : null;
+    },
+    speak: async ({ text, voice, language }) => {
+      const r = await api('/aidesk/tts/speech', { method: 'POST', token: token(), timeout: 120000, body: { model: `${m.provider}:${m.id}`, text, voice, language } });
+      if (!r.ok) {
+        if (r.error === 'unauthorized') send({ type: 'auth-expired' });
+        return { ok: false, code: r.error, error: T('err_' + r.error) !== 'err_' + r.error ? T('err_' + r.error) : r.error, detail: r.data?.detail };
+      }
+      return { ok: true, audio: Buffer.from(r.data.audio, 'base64'), billed: r.data.billed, remaining: r.data.remaining };
+    },
+    confirm: ({ title, body }) => askConfirm({ tool: 'text_to_speech', title, command: body }),
+    progress: (text) => send({ type: 'status', text }),
+    ffmpeg: async (src, dst) => {
+      const ff = findFfmpeg();
+      if (!ff) return false;
+      return new Promise((ok) => require('child_process').execFile(ff, ['-y', '-loglevel', 'error', '-i', src, '-codec:a', 'libmp3lame', '-q:a', '3', dst], { timeout: 300000 }, (e) => ok(!e && fs.existsSync(dst))));
+    },
+  });
+  if (res.billed) send({ type: 'quota', quota: { billed: res.billed, remaining: res.remaining } });
+  if (res.rejected) return T('ttsRejected');
+  if (res.error) return T('errorPrefix') + res.error;
+  if (res.failed) return T('ttsFailed', { n: res.failed.length, total: res.total, billed: Number(res.billed || 0).toLocaleString() }) + '\n' + res.failed.slice(0, 8).map((f) => (lang === 'en' ? `- #${f.i + 1} "${f.sentence.slice(0, 40)}": ` : `- 第 ${f.i + 1} 句「${f.sentence.slice(0, 40)}」：`) + f.error).join('\n');
+  const rel = path.relative(root, res.abs).split(path.sep).join('/');
+  send({ type: 'audio', callId, path: res.abs });
+  return T('ttsSaved', { path: rel, sec: res.seconds.toFixed(1), n: res.sentences, voice: res.voice, billed: Number(res.billed || 0).toLocaleString() }) +
+    (res.srtAbs ? '\n' + T('ttsSrt', { path: path.relative(root, res.srtAbs).split(path.sep).join('/') }) : '') + (res.note ? '\n' + res.note : '');
+}
+
 async function executeTool(name, args, root, signal, callId) {
   if (name === 'ask_expert') return expertTool(args, signal);
   if (!root) {
     // 纯聊天对话：生成的图片存到默认的「文稿/Shuttle」；读写文件、执行命令不可用（附件除外）
+    if (name === 'text_to_speech') {
+      fs.mkdirSync(defaultWorkspace(), { recursive: true });
+      return textToSpeech(args, defaultWorkspace(), callId, signal);
+    }
     if (name === 'ai_visibility' || name === 'geo_content') {
       fs.mkdirSync(defaultWorkspace(), { recursive: true });
       return name === 'geo_content' ? geoContentTool(args, defaultWorkspace(), signal) : aiVisibility(args, defaultWorkspace(), signal);
@@ -2347,6 +2446,7 @@ async function executeTool(name, args, root, signal, callId) {
   if (name === 'generate_images') return generateImages(args, root, callId, signal);
   if (name === 'ai_visibility') return aiVisibility(args, root, signal);
   if (name === 'geo_content') return geoContentTool(args, root, signal);
+  if (name === 'text_to_speech') return textToSpeech(args, root, callId, signal);
   if (mcp.isMcpTool(name)) return callMcpTool(name, args, signal);
   if (isMcpAdminTool(name)) return mcpAdminTool(name, args);
   if (name === 'load_skill') return loadSkillTool(args);

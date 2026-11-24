@@ -209,6 +209,22 @@ function showToolImage(callId, absPath) {
   $('log').scrollTop = $('log').scrollHeight;
 }
 
+// 配音结果：在工具卡片里放一个播放器
+function showToolAudio(callId, absPath) {
+  const el = toolEls[callId];
+  if (!el || el.querySelector('.gen-audio')) return;
+  const au = document.createElement('audio');
+  au.className = 'gen-audio';
+  au.controls = true;
+  au.preload = 'metadata';
+  au.src = fileUrl(absPath) + '?t=' + Date.now();
+  au.title = absPath;
+  au.onerror = () => au.remove();
+  el.insertBefore(au, el.querySelector('pre'));
+  el.open = true;
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
 const SEND_ICONS = {
   send: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   stop: '<svg viewBox="0 0 24 24" width="14" height="14"><rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor"/></svg>',
@@ -253,6 +269,7 @@ function toolSummary(name, a) {
   if (name === 'search') return a.pattern;
   if (name === 'run_command') return a.command;
   if (name === 'generate_image') return a.prompt;
+  if (name === 'text_to_speech') return (a.voice ? a.voice + ' · ' : '') + String(a.text || a.text_file || '').slice(0, 80);
   if (name === 'generate_images') return T('batchToolSummary', { n: (a.items || []).length });
   if (name === 'ai_visibility' || name === 'geo_content') return a.brand || a.project || '';
   if (name === 'ask_expert') return (a.expert ? a.expert + ' · ' : '') + (a.question || '');
@@ -606,6 +623,8 @@ function renderMessages(messages, compact) {
       const call = calls[m.tool_call_id] || { name: '?' };
       renderTool({ id: m.tool_call_id, ...call, status: 'done', result: m.content });
       // 生成的图片：从工具结果里取出保存路径（相对工作区），显示预览
+      const voiced = call.name === 'text_to_speech' && /(?:已保存配音|Saved voice-over) (.+?)(?:（| \()/.exec(m.content || '');
+      if (voiced && settings.workspace) showToolAudio(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + voiced[1]);
       const saved = call.name === 'generate_image' && /(?:已保存图片|Saved image) (.+?)(?:（| \()/.exec(m.content || '');
       if (saved && settings.workspace) showToolImage(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + saved[1]);
       if (call.name === 'generate_images' && settings.workspace) {
@@ -1462,7 +1481,7 @@ function renderStream(final) {
 }
 
 // ---------- 后台运行：多个对话可以同时跑，界面只显示当前对话的输出 ----------
-const CONV_EVENTS = new Set(['context', 'compacted', 'notice', 'expert-start', 'thinking', 'status', 'assistant-start', 'assistant-delta', 'assistant-end', 'tool', 'image', 'confirm', 'confirm-timeout', 'usage', 'error', 'platform-error', 'done', 'suggestion']);
+const CONV_EVENTS = new Set(['context', 'compacted', 'notice', 'expert-start', 'thinking', 'status', 'assistant-start', 'assistant-delta', 'assistant-end', 'tool', 'image', 'audio', 'confirm', 'confirm-timeout', 'usage', 'error', 'platform-error', 'done', 'suggestion']);
 const runningConvs = new Set(); // 正在运行的对话
 const unreadConvs = new Set(); // 在后台跑完、用户还没看的对话
 const confirmQueue = new Map(); // convId -> 等用户确认的事件（后台对话的确认，打开对话时再弹）
@@ -1555,6 +1574,9 @@ window.api.onEvent((evt) => {
     case 'image':
       if (evt.multi) showToolImageGrid(evt.callId, evt.path);
       else showToolImage(evt.callId, evt.path);
+      break;
+    case 'audio':
+      showToolAudio(evt.callId, evt.path);
       break;
     case 'confirm':
       showConfirm(evt);
