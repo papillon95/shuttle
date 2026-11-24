@@ -7,6 +7,7 @@ const APP_ICON = path.join(__dirname, 'assets', 'icon.png');
 const fs = require('fs');
 const BUILTIN_PROVIDERS = require('./providers');
 const tools = require('./tools');
+const geo = require('./geo');
 const docs = require('./docs');
 const updater = require('./updater');
 const mcp = require('./mcp');
@@ -956,6 +957,29 @@ const IMAGE_BATCH_TOOL = {
     },
   },
 };
+// AI 可见度监测（GEO）：拿潜在客户会问的问题去问多个大模型，看有没有推荐用户的品牌（见 geo.js）
+const GEO_TOOL = {
+  type: 'function',
+  function: {
+    name: 'ai_visibility',
+    description:
+      '监测品牌在各家 AI 回答里的可见度（GEO / AI 搜索优化）：拿潜在客户可能问的问题，同时去问 DeepSeek、豆包、千问、Kimi、文心等模型，统计回答里有没有提到这个品牌、排第几、怎么评价、更常推荐谁、引用了哪些来源，生成本地 HTML 报告（含历次趋势）。' +
+      '用户想知道「AI 会不会推荐我的产品 / 公司」「怎么让豆包、DeepSeek 推荐我们」时用。调用前先和用户确认品牌名（含常见别名）、两三个竞品，并替用户写出 8～15 个真实客户会问的问题（多用「哪家好」「推荐」「怎么选」「XX 和 XX 哪个好」这类问法，不要在问题里直接写出品牌名，除非是专门测品牌口碑的问题）。' +
+      '工具会弹窗让用户确认。之后要重复监测同一组问题，只传 project 即可（定期监测时用）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        brand: { type: 'string', description: '要监测的品牌 / 公司 / 产品名' },
+        aliases: { type: 'array', items: { type: 'string' }, description: '别名、简称、英文名' },
+        competitors: { type: 'array', items: { type: 'string' }, description: '竞品名（可选，最多 10 个）' },
+        questions: { type: 'array', items: { type: 'string' }, description: '要问 AI 的问题，最多 30 个' },
+        models: { type: 'array', items: { type: 'string' }, description: `要问的模型，简称即可：deepseek、doubao、qwen、kimi、ernie、glm；默认 ${geo.DEFAULT_MODELS.join('、')}` },
+        repeats: { type: 'integer', enum: [1, 2, 3], description: '每个问题每个模型问几次（回答每次不一样，多问几次统计更准），默认 2' },
+        project: { type: 'string', description: '项目名（默认用品牌名）；只传这个就按上次保存的配置重新监测一遍' },
+      },
+    },
+  },
+};
 // ---------- 外援：调用电脑上装好的 AI 命令行工具（见 experts.js） ----------
 // settings.experts：{ [id]: { enabled, path } }（内置工具的开关、手动指定的路径）
 // settings.expertsCustom：用户添加的其他工具 [{ id, name, path, args, output, jsonField, readOnly }]
@@ -1419,7 +1443,7 @@ function toolDefinitions(settings, c) {
 }
 function toolDefinitionsAll(settings) {
   // 生图始终走平台（扣会员额度），和对话用的是平台模型还是自己的 Key 无关
-  const base = currentUser && imageModels().length ? [...tools.definitions, IMAGE_TOOL, IMAGE_BATCH_TOOL] : tools.definitions;
+  const base = [...tools.definitions, ...(currentUser && imageModels().length ? [IMAGE_TOOL, IMAGE_BATCH_TOOL] : []), ...(currentUser ? [GEO_TOOL] : [])];
   const expertTool = settings.expertAuto !== false && expertsAvail.length ? [expertToolDef()] : [];
   return [...base, ...expertTool, ...BROWSER_TOOLS, SCHEDULE_TOOL, ...MCP_ADMIN_TOOLS, ...(hasEnabledSkills() ? [SKILL_TOOL] : []), ...(mcp.lazyServers().length ? MCP_LAZY_TOOLS : []), ...mcp.toolDefinitions()];
 }
@@ -2184,10 +2208,89 @@ async function generateImages(args, root, callId, signal) {
   return out;
 }
 
+// ---------- AI 可见度监测 ----------
+/** 走平台调一次模型（不流式），返回 { text, error }；同时进行的请求太多（429）就等一会儿再试 */
+async function platformAsk(model, messages, maxTokens, signal) {
+  const base = (loadSettings().serverUrl || DEFAULT_SERVER).replace(/\/$/, '') + '/aidesk/llm';
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    if (signal?.aborted) return { text: '', error: 'aborted' };
+    try {
+      const res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({ model, messages, max_tokens: maxTokens, stream: false, x_effort: 'fast' }),
+        signal: AbortSignal.timeout(120000),
+      });
+      const raw = await res.text();
+      let text = '';
+      let err = null;
+      if (/^\s*data:/.test(raw)) {
+        for (const line of raw.split('\n')) {
+          const m = /^data:\s*(.+)$/.exec(line.trim());
+          if (!m || m[1] === '[DONE]') continue;
+          try {
+            const j = JSON.parse(m[1]);
+            if (j.x_quota) send({ type: 'quota', quota: j.x_quota });
+            if (j.code && j.code !== 200) err = j.msg || 'error';
+            text += j.choices?.[0]?.delta?.content || j.choices?.[0]?.message?.content || '';
+          } catch {}
+        }
+      } else {
+        let j = {};
+        try {
+          j = JSON.parse(raw);
+        } catch {}
+        if (j.x_quota) send({ type: 'quota', quota: j.x_quota });
+        if (j.code && j.code !== 200) err = j.msg || 'error';
+        else text = j.choices?.[0]?.message?.content || '';
+        if (!res.ok && !err) err = 'HTTP ' + res.status;
+      }
+      if (err === 'too_many_requests' || res.status === 429) {
+        await new Promise((r) => setTimeout(r, 3000 * attempt));
+        continue;
+      }
+      if (err === 'unauthorized') send({ type: 'auth-expired' });
+      if (err) return { text: '', error: T('err_' + err) !== 'err_' + err ? T('err_' + err) : err };
+      return { text: text.trim() };
+    } catch (e) {
+      if (signal?.aborted) return { text: '', error: 'aborted' };
+      if (attempt === 4) return { text: '', error: e.message };
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+  return { text: '', error: T('err_too_many_requests') };
+}
+async function aiVisibility(args, root, signal) {
+  if (!currentUser) return T('imageNeedsPlatform');
+  const q = await api('/aidesk/billing/quota', { token: token() });
+  const level = q.ok ? Number(q.data.level || 0) : 0;
+  const models = platformModels();
+  const analyzeModel = (models.find((m) => m.value === 'glm:glm-4-flash') || models.find((m) => /economy/.test(m.value) && !m.minPlanLevel) || models.find((m) => !m.minPlanLevel))?.value;
+  const scheduled = !!runCtx.getStore()?.conv?.scheduleId;
+  const res = await geo.run(args || {}, root, {
+    platformModels: models,
+    level,
+    analyzeModel,
+    scheduled,
+    lang,
+    signal,
+    ask: (model, messages, maxTokens) => platformAsk(model, messages, maxTokens, signal),
+    confirm: ({ title, body }) => askConfirm({ tool: 'ai_visibility', title, command: body }),
+    progress: (text) => send({ type: 'status', text }),
+  });
+  if (res.rejected) return T('geoRejected');
+  if (res.error) return T('errorPrefix') + res.error;
+  return geo.textSummary(res, lang !== 'en') + (await autoPreview(res.reportFile));
+}
+
 async function executeTool(name, args, root, signal, callId) {
   if (name === 'ask_expert') return expertTool(args, signal);
   if (!root) {
     // 纯聊天对话：生成的图片存到默认的「文稿/Shuttle」；读写文件、执行命令不可用（附件除外）
+    if (name === 'ai_visibility') {
+      fs.mkdirSync(defaultWorkspace(), { recursive: true });
+      return aiVisibility(args, defaultWorkspace(), signal);
+    }
     if (name === 'generate_image' || name === 'generate_images') {
       fs.mkdirSync(defaultWorkspace(), { recursive: true });
       return name === 'generate_images' ? generateImages(args, defaultWorkspace(), callId, signal) : generateImage(args, defaultWorkspace(), callId);
@@ -2196,6 +2299,7 @@ async function executeTool(name, args, root, signal, callId) {
   }
   if (name === 'generate_image') return generateImage(args, root, callId);
   if (name === 'generate_images') return generateImages(args, root, callId, signal);
+  if (name === 'ai_visibility') return aiVisibility(args, root, signal);
   if (mcp.isMcpTool(name)) return callMcpTool(name, args, signal);
   if (isMcpAdminTool(name)) return mcpAdminTool(name, args);
   if (name === 'load_skill') return loadSkillTool(args);
