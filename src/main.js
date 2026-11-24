@@ -645,6 +645,25 @@ function effortParams(effort, baseUrl, model) {
   return {};
 }
 
+// 用自己的 OpenRouter Key 调 Claude 时打缓存标记（平台模式由服务端打，规则相同，见 AideskLlmController.withCacheMarks）：
+// 系统提示一个、最后一条消息一个，之前的整段对话下一轮就能命中缓存，只收一成的钱
+function withCacheMarks(messages) {
+  const msgs = messages.map((m) => ({ ...m }));
+  const mark = (m) => {
+    if (!m) return;
+    if (typeof m.content === 'string') {
+      if (m.content) m.content = [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }];
+    } else if (Array.isArray(m.content)) {
+      const i = m.content.map((p) => p.type).lastIndexOf('text');
+      if (i >= 0) m.content = m.content.map((p, j) => (j === i ? { ...p, cache_control: { type: 'ephemeral' } } : p));
+    }
+  };
+  const sys = msgs.map((m) => m.role).lastIndexOf('system');
+  if (sys >= 0) mark(msgs[sys]);
+  if (msgs.length - 1 !== sys) mark(msgs[msgs.length - 1]);
+  return msgs;
+}
+
 // ---------- 上下文控制 ----------
 // 每调用一次模型都要把整段对话重新发一遍并按 token 计费，对话越长越贵，还可能超出模型上下文。
 // 这里只压缩「发给模型的副本」，本地保存的完整对话不受影响。
@@ -824,7 +843,7 @@ async function callModel(settings, signal, c) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model, messages, tools: toolDefinitions(settings, c), tool_choice: 'auto', temperature: Number(settings.temperature), stream: true,
+        model, messages: settings.useOwnKey && /^anthropic\//.test(model) ? withCacheMarks(messages) : messages, tools: toolDefinitions(settings, c), tool_choice: 'auto', temperature: Number(settings.temperature), stream: true,
         ...(withUsage ? { stream_options: { include_usage: true } } : {}),
         ...effort,
       }),
