@@ -166,6 +166,8 @@ function getProviders() {
       models: p.models.map((m) => ({ id: m.id, label: m.label, labelEn: m.labelEn })),
     };
   }
+  // 服务器目录里还没配的内置服务商（如 OpenRouter）也显示；后台配了就以后台为准
+  if (!out.openrouter) out.openrouter = BUILTIN_PROVIDERS.openrouter;
   out.custom = BUILTIN_PROVIDERS.custom;
   return out;
 }
@@ -623,6 +625,7 @@ function effortParams(effort, baseUrl, model) {
   }
   if (b.includes('dashscope')) return { enable_thinking: deep };
   if (/openai\.com|generativelanguage\.googleapis\.com|x\.ai/.test(b)) return { reasoning_effort: deep ? 'high' : 'low' };
+  if (b.includes('openrouter.ai')) return { reasoning: { effort: deep ? 'high' : 'low' } }; // OpenRouter 统一参数，转给各家
   if (b.includes('anthropic.com') && deep) return { thinking: { type: 'enabled', budget_tokens: 8000 } };
   return {};
 }

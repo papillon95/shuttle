@@ -1,4 +1,4 @@
-// 国内大模型厂商配置。它们都提供 OpenAI 兼容接口，所以只需换 baseUrl / model。
+// 大模型厂商配置（国内厂商 + OpenRouter）。它们都提供 OpenAI 兼容接口，所以只需换 baseUrl / model。
 // 厂商会不断发布新模型；不在列表里的可以在「设置」里添加自定义模型名。
 module.exports = {
   deepseek: {
@@ -40,6 +40,21 @@ module.exports = {
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     models: [{ id: 'doubao-seed-1-6-250615', label: '豆包 Seed 1.6', labelEn: 'Doubao Seed 1.6' }],
     keyUrl: 'https://console.volcengine.com/ark',
+  },
+  // 海外模型聚合平台：一个 Key 调 Gemini / Claude / GPT，由它在海外转发，国内能直连（不认地区限制）
+  openrouter: {
+    name: 'OpenRouter（海外模型）', nameEn: 'OpenRouter (Gemini, Claude, GPT)',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    models: [
+      { id: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B（免费，限次数）', labelEn: 'Gemma 4 31B (free, rate-limited)' },
+      { id: 'google/gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite（便宜）', labelEn: 'Gemini 3.1 Flash Lite (low cost)' },
+      { id: 'google/gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+      { id: 'anthropic/claude-haiku-5.5', label: 'Claude Haiku 5.5（便宜）', labelEn: 'Claude Haiku 5.5 (low cost)' },
+      { id: 'anthropic/claude-sonnet-5.5', label: 'Claude Sonnet 5.5（更强）', labelEn: 'Claude Sonnet 5.5 (more capable)' },
+      { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna（便宜）', labelEn: 'GPT-6 Luna (low cost)' },
+      { id: 'openai/gpt-6.2-sol', label: 'GPT-6.2 Sol（更强）', labelEn: 'GPT-6.2 Sol (more capable)' },
+    ],
+    keyUrl: 'https://openrouter.ai/settings/keys',
   },
   custom: {
     name: '自定义接口', nameEn: 'Custom endpoint',
