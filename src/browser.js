@@ -122,15 +122,36 @@ function hide() {
 const isOpen = () => visible;
 
 // ---------- 导航 ----------
-function normalizeUrl(input, lang) {
+// 可选的搜索站点：AI 按内容挑（经验种草 → 小红书，观点问答 → 知乎，视频 → B站…）；
+// 地址栏里也可以写「知乎 关键词」「小红书 关键词」。知乎、小红书、微博要登录才能看全，用户在内置浏览器里登录一次就行
+// （搜狗微信搜索、抖音网页版对自动打开的页面返回空白，暂不支持）
+const SEARCH_SITES = {
+  baidu: { names: ['百度', 'baidu'], url: 'https://www.baidu.com/s?wd=' },
+  bing: { names: ['必应', 'bing'], url: 'https://cn.bing.com/search?q=' },
+  zhihu: { names: ['知乎', 'zhihu'], url: 'https://www.zhihu.com/search?type=content&q=' },
+  xiaohongshu: { names: ['小红书', 'xhs', 'xiaohongshu'], url: 'https://www.xiaohongshu.com/search_result?keyword=' },
+  bilibili: { names: ['b站', '哔哩哔哩', 'bilibili'], url: 'https://search.bilibili.com/all?keyword=' },
+  weibo: { names: ['微博', 'weibo'], url: 'https://s.weibo.com/weibo?q=' },
+};
+function searchUrl(site, q, lang) {
+  const s = SEARCH_SITES[site] || (lang === 'en' ? SEARCH_SITES.bing : SEARCH_SITES.baidu);
+  return s.url + encodeURIComponent(q);
+}
+function normalizeUrl(input, lang, site) {
   const s = String(input || '').trim();
   if (!s) return 'about:blank';
   if (/^(https?|file):\/\//i.test(s)) return s;
   // 本机地址（本地开发服务器）用 http
   if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(\/.*)?$/i.test(s)) return 'http://' + s;
   if (/^[\w-]+(\.[\w-]+)+(:\d+)?(\/.*)?$/.test(s)) return 'https://' + s;
-  // 不像网址就当搜索词
-  return lang === 'en' ? 'https://www.bing.com/search?q=' + encodeURIComponent(s) : 'https://www.baidu.com/s?wd=' + encodeURIComponent(s);
+  // 不像网址就当搜索词：指定了站点用那个站点搜；「知乎 xxx」这种写法也认
+  if (site && SEARCH_SITES[site]) return searchUrl(site, s, lang);
+  const m = s.match(/^(\S+)\s+(.+)$/);
+  if (m) {
+    const hit = Object.keys(SEARCH_SITES).find((k) => SEARCH_SITES[k].names.includes(m[1].toLowerCase()));
+    if (hit) return searchUrl(hit, m[2], lang);
+  }
+  return searchUrl(null, s, lang);
 }
 // 等页面加载完（最多 timeout 毫秒），再多等一会儿让脚本渲染
 function settle(timeout = 15000) {
@@ -153,9 +174,9 @@ function settle(timeout = 15000) {
     }, 350);
   });
 }
-async function navigate(input, lang) {
+async function navigate(input, lang, site) {
   show();
-  const url = normalizeUrl(input, lang);
+  const url = normalizeUrl(input, lang, site);
   try {
     await view.webContents.loadURL(url);
   } catch (e) {
@@ -370,4 +391,4 @@ async function screenshot() {
   return 'data:image/jpeg;base64,' + scaled.toJPEG(70).toString('base64');
 }
 
-module.exports = { hasPage, currentFile, init, show, hide, isOpen, setBounds, setSuspended, navigate, back, forward, reload, snapshot, elementInfo, click, type, press, scroll, screenshot, state };
+module.exports = { SEARCH_SITES, normalizeUrl, hasPage, currentFile, init, show, hide, isOpen, setBounds, setSuspended, navigate, back, forward, reload, snapshot, elementInfo, click, type, press, scroll, screenshot, state };

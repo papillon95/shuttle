@@ -1821,8 +1821,17 @@ ipcMain.handle('skills:open', (_e, name) => {
 const BROWSER_TOOLS = [
   {
     name: 'browser_open',
-    description: '在 Shuttle 右侧的内置浏览器里打开网址（也可以直接给搜索关键词，或工作文件夹里的本地网页路径，如 index.html）。返回页面标题、地址、可操作元素列表（[编号]）和正文。需要上网查最新信息、操作网页时使用。',
-    parameters: { type: 'object', properties: { url: { type: 'string', description: '网址，或要搜索的关键词' } }, required: ['url'] },
+    description: '在 Shuttle 右侧的内置浏览器里打开网址（也可以直接给搜索关键词，或工作文件夹里的本地网页路径，如 index.html）。返回页面标题、地址、可操作元素列表（[编号]）和正文。需要上网查最新信息、操作网页时使用。'
+      + '搜索时按内容选 site：一般信息用 baidu；真实用户经验、种草、探店、攻略用 xiaohongshu；观点、问答、深度分析用 zhihu；视频教程用 bilibili；热点、舆论用 weibo；英文或技术资料用 bing。'
+      + '需要多角度时可以分别在几个站点搜。知乎、小红书、微博要登录才能看全：页面提示登录时，告诉用户在右侧浏览器里登录一次（以后会记住），登录后用 browser_read 刷新。',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '网址，或要搜索的关键词' },
+        site: { type: 'string', enum: ['baidu', 'bing', 'zhihu', 'xiaohongshu', 'bilibili', 'weibo'], description: '用哪个网站搜索（url 是关键词时有效），默认百度' },
+      },
+      required: ['url'],
+    },
   },
   {
     name: 'browser_read',
@@ -1864,6 +1873,16 @@ const KIND_LABEL = {
   en: { link: 'link', button: 'button', textbox: 'textbox', password: 'password', select: 'select', checkbox: 'checkbox', radio: 'radio', clickable: 'clickable' },
 };
 // 页面快照转成给模型看的文字
+// 知乎、小红书、微博、B站没登录时搜不到或看不全：明确告诉模型去请用户登录，别绕到别的地方乱搜
+const LOGIN_SITES = /(^|\.)(zhihu\.com|xiaohongshu\.com|weibo\.com|weibo\.cn|bilibili\.com)$/;
+function loginWallHint(snap) {
+  let host = '';
+  try { host = new URL(snap.url || '').hostname; } catch {}
+  if (!LOGIN_SITES.test(host)) return '';
+  const text = String(snap.text || '');
+  const wall = /passport\.|signin|\/login/.test(snap.url || '') || text.replace(/\s+/g, '').length < 200 || /未搜索到相关内容|登录后查看|登录后即可|扫码登录/.test(text);
+  return wall ? '\n\n' + T('browserLoginWall', { site: host.replace(/^www\./, '') }) : '';
+}
 function formatSnapshot(snap, maxText) {
   // 读不到页面（没打开网页 / 页面卡住 / 崩溃）：直接告诉模型怎么办，不要给一个空页面
   if (['no_page', 'page_timeout', 'page_crashed'].includes(snap.error)) return T('browserErr_' + snap.error, { url: snap.url || '' });
@@ -1921,8 +1940,9 @@ async function browserTool(name, args, root) {
   try {
     switch (name) {
       case 'browser_open': {
-        await browser.navigate(localPageUrl(args.url, root) || args.url, lang);
-        return formatSnapshot(await browser.snapshot(), 6000);
+        await browser.navigate(localPageUrl(args.url, root) || args.url, lang, args.site);
+        const snap = await browser.snapshot();
+        return formatSnapshot(snap, 6000) + loginWallHint(snap);
       }
       case 'browser_read':
         if (!browser.isOpen()) browser.show();
