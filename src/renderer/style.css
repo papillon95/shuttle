@@ -379,6 +379,17 @@ button.small { padding: 3px 8px; font-size: 12px; }
 .pay-status { margin: 12px 0 6px; font-size: 13px; color: var(--muted); min-height: 20px; }
 .pay-status.err { color: var(--danger); }
 .order-box { background: var(--side); border-radius: 10px; padding: 12px 14px; font-size: 13px; margin: 8px 0; }
+.order-box .hint.ok { color: var(--add-text); }
+.order-box .hint.bad { color: var(--danger, #d0453a); }
+.order-no { cursor: pointer; font-family: var(--mono); border-bottom: 1px dashed var(--muted); }
+.order-no:hover { color: var(--accent); border-color: var(--accent); }
+.proof-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--hover); color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.proof-tag.rejected { color: var(--danger, #d0453a); }
+.order-box .pay-sorry { margin: 6px 0 4px; padding: 7px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); color: var(--text-soft); font-size: 12.5px; }
+.order-box .pay-step { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.order-box .pay-way { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
+.order-box .tag-rec { font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: #fff; }
+.order-box .wx-id { font: 600 13px var(--mono); margin: 0 6px; user-select: all; }
 .order-box .manual-row { margin: 6px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .order-box .pay-imgs { display: flex; gap: 16px; margin: 10px 0; flex-wrap: wrap; }
 .order-box .pay-img { margin: 0; text-align: center; font-size: 12px; color: var(--muted); }

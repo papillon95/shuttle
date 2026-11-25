@@ -2924,13 +2924,25 @@ function showManualPay(o, justCreated) {
   const box = $('orderBox');
   box.classList.remove('hidden');
   const m = payManual || {};
+  // 客服微信可能配了好几个（「A 或 B」「A、B」），拆开分别显示、分别复制
+  const wechats = String(m.wechat || '').split(/\s*(?:或|、|,|，|\/|\s)\s*/).map((x) => x.trim()).filter(Boolean);
   const img = (src, label) => (/^https?:\/\//.test(src || '') ? `<figure class="pay-img"><img src="${esc(src)}" alt=""><figcaption>${esc(label)}</figcaption></figure>` : '');
-  const imgs = img(m.payQr, T('manualPayQr')) + img(m.qr, T('manualSupportQr'));
+  const copyBtn = (v, label) => `<button class="ghost small" data-copy="${esc(v)}">${esc(label || T('copy'))}</button>`;
   box.innerHTML = `<b>${esc(T(justCreated ? 'orderCreated' : 'manualPayTitle'))}</b>
-    <div class="manual-row">${esc(T('orderInfo', { no: o.orderNo, plan: o.planName || '', amount: yuan(o.amountCents) }))} <button class="ghost small" data-copy="${esc(o.orderNo)}">${esc(T('copyOrderNo'))}</button></div>
-    ${imgs ? `<div class="pay-imgs">${imgs}</div>` : ''}
-    ${m.wechat ? `<div class="manual-row">${esc(T('manualSupportWechat', { id: m.wechat }))} <button class="ghost small" data-copy="${esc(m.wechat)}">${esc(T('copy'))}</button></div>` : ''}
-    <div class="hint">${esc(m.note || (m.wechat || imgs ? T('manualPayNote') : T('payPending')))}</div>`;
+    <div class="pay-sorry">${esc(T('paySorry'))}</div>
+    <div class="manual-row">${esc(T('orderInfo', { no: o.orderNo, plan: o.planName || '', amount: yuan(o.amountCents) }))} ${copyBtn(o.orderNo, T('copyOrderNo'))}</div>
+    <div class="pay-step"><b>${esc(T('payStep1'))}</b><div class="hint">${esc(T('payStep1Hint', { amount: yuan(o.amountCents) }))}</div>
+      ${m.payQr ? `<div class="pay-imgs">${img(m.payQr, T('manualPayQr'))}</div>` : `<div class="hint">${esc(T('payPending'))}</div>`}</div>
+    <div class="pay-step"><b>${esc(T('payStep2'))}</b>
+      <div class="pay-way"><div><b>${esc(T('payWay1'))}</b><span class="tag-rec">${esc(T('payRecommended'))}</span></div>
+        <div class="hint">${esc(T('payWay1Hint'))}</div>
+        <div class="manual-row"><button class="primary small" data-proof="${esc(o.orderNo)}">${esc(T('proofUpload'))}</button><span class="hint" id="proofResult"></span></div></div>
+      ${wechats.length || m.qr ? `<div class="pay-way"><div><b>${esc(T('payWay2'))}</b></div>
+        <div class="hint">${esc(T('payWay2Hint'))}</div>
+        ${wechats.map((w) => `<div class="manual-row">${esc(T('supportWechatId'))}<code class="wx-id">${esc(w)}</code>${copyBtn(w)}</div>`).join('')}
+        ${m.qr ? `<div class="pay-imgs">${img(m.qr, T('manualSupportQr'))}</div>` : ''}</div>` : ''}
+    </div>`;
+  box.querySelector('[data-proof]').onclick = () => pickProof(o.orderNo);
   box.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = async () => {
     try { await navigator.clipboard.writeText(b.dataset.copy); showToast(T('copied'), 'info'); } catch {}
   }));
@@ -2994,14 +3006,69 @@ $('payClose').onclick = () => {
   $('payModal').classList.add('hidden');
 };
 
+// 上传付款截图：压缩成长边 1600 的 JPEG 发给服务端，AI 核对后通知客服确认（预审通过的先开 8 小时临时会员）
+let proofFor = null;
+const proofInput = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*', hidden: true });
+document.body.appendChild(proofInput);
+function pickProof(orderNo) {
+  proofFor = orderNo;
+  proofInput.value = '';
+  proofInput.click();
+}
+async function shrinkToDataUrl(file) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const c = Object.assign(document.createElement('canvas'), { width: Math.round(bmp.width * k), height: Math.round(bmp.height * k) });
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+proofInput.onchange = async () => {
+  const f = proofInput.files[0];
+  if (!f || !proofFor) return;
+  const out = $('proofResult');
+  const say = (t, cls) => {
+    if (out) {
+      out.textContent = t;
+      out.className = 'hint ' + (cls || '');
+    } else showToast(t, cls === 'bad' ? 'error' : 'info');
+  };
+  say(T('proofChecking'));
+  let image;
+  try {
+    image = await shrinkToDataUrl(f);
+  } catch {
+    return say(T('proofBadImage'), 'bad');
+  }
+  const r = await window.api.call('POST', '/aidesk/support/proof', { orderNo: proofFor, image });
+  if (!r.ok) return say(r.data?.message || T('err_' + r.error), 'bad');
+  const d = r.data;
+  if (d.pass) say(T(d.provisional ? 'proofPassProvisional' : 'proofPass'), 'ok');
+  else say(T('proofFail', { why: (d.fails || []).join('；') }), 'bad');
+  loadOrders();
+  if (d.provisional) refreshQuota();
+};
+
 async function loadOrders() {
-  const r = await window.api.call('GET', '/aidesk/billing/orders');
+  const [r, pr] = await Promise.all([window.api.call('GET', '/aidesk/billing/orders'), window.api.call('GET', '/aidesk/support/proofs')]);
   if (!r.ok) return;
+  const proofs = pr.ok ? pr.data.proofs || [] : [];
+  // 待付款订单传过截图的，显示核对状态（核对中 / 被驳回）
+  const proofTag = (o) => {
+    const p = proofs.find((x) => x.orderNo === o.orderNo);
+    return p ? ` <span class="proof-tag ${p.status}">${esc(T('proofStatus_' + p.status))}</span>` : '';
+  };
   const canPay = (o) => o.status === 'pending' && payChannels.includes('wechat') && Date.now() - new Date(String(o.createTime).replace(' ', 'T') + '+08:00').getTime() < 29 * 60000;
   $('orderList').innerHTML = r.data.orders.length
-    ? `<table class="tbl">${r.data.orders.map((o, i) => `<tr><td>${esc(o.orderNo)}</td><td>${esc(o.planName || '')}</td><td class="num">¥${yuan(o.amountCents)}</td><td>${canPay(o) ? `<button class="ghost small" data-pay="${esc(o.orderNo)}">${esc(T('payNow'))}</button>` : o.status === 'pending' && !payChannels.includes('wechat') ? `<button class="ghost small" data-manual="${i}">${esc(T('manualPayHow'))}</button>` : esc(T('orderStatus_' + o.status))}</td><td>${esc(o.createTime || '')}</td></tr>`).join('')}</table>`
+    ? `<table class="tbl">${r.data.orders.map((o, i) => `<tr><td><span class="order-no" data-copy-no="${esc(o.orderNo)}" title="${esc(T('copyOrderNo'))}">${esc(o.orderNo)}</span></td><td>${esc(o.planName || '')}</td><td class="num">¥${yuan(o.amountCents)}</td><td>${canPay(o) ? `<button class="ghost small" data-pay="${esc(o.orderNo)}">${esc(T('payNow'))}</button>` : o.status === 'pending' && !payChannels.includes('wechat') ? `<button class="ghost small" data-manual="${i}">${esc(T('manualPayHow'))}</button>${proofTag(o)}` : esc(T('orderStatus_' + o.status))}</td><td>${esc(o.createTime || '')}</td></tr>`).join('')}</table>`
     : `<div class="hint">${esc(T('noOrders'))}</div>`;
   $('orderList').querySelectorAll('[data-pay]').forEach((b) => (b.onclick = () => payOrder(b.dataset.pay)));
+  // 点订单号就复制（发给客服、转账备注用）
+  $('orderList').querySelectorAll('[data-copy-no]').forEach((el) => (el.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(el.dataset.copyNo);
+      showToast(T('copied'), 'info');
+    } catch {}
+  }));
   // 待人工确认收款的订单：点「怎么付款」再看一次订单号、收款码和客服
   $('orderList').querySelectorAll('[data-manual]').forEach((b) => (b.onclick = () => showManualPay(r.data.orders[Number(b.dataset.manual)], false)));
 }

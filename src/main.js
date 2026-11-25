@@ -4437,9 +4437,10 @@ function reportUsage(settings, usage, status, latencyMs, errorCode) {
 
 // 界面调用服务端业务接口的通道（账号、用量、反馈、公告、版本）
 ipcMain.handle('api:call', async (_e, method, pathname, body) => {
-  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|mcp-tokens|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
+  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|mcp-tokens|support|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
   // 语音识别最长 60 秒音频，腾讯云返回较慢，放宽超时
-  const timeout = pathname === '/aidesk/asr' ? 30000 : undefined;
+  // 上传付款截图要等 AI 看图核对，也放宽
+  const timeout = pathname === '/aidesk/asr' ? 30000 : pathname === '/aidesk/support/proof' ? 90000 : undefined;
   const r = await api(pathname, { method, body, token: token(), timeout });
   if (!r.ok && r.error === 'unauthorized') {
     currentUser = null;
