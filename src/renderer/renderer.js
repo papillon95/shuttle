@@ -1843,6 +1843,7 @@ function switchTab(name) {
   if (name === 'experts') refreshExpertsPane();
   if (name === 'mcp') loadMcp();
   if (name === 'account') loadAccount();
+  if (name === 'team') loadTeam();
   if (name === 'usage') loadUsage();
   if (name === 'feedback') loadFeedback();
   if (name === 'about') loadAbout();
@@ -2631,6 +2632,126 @@ $('mcpTokenCopyCli').onclick = () => copyMsg(`claude mcp add --transport http sh
 $('mcpTokenInstall').onclick = async () => {
   const r = await window.api.mcpInstallPlatform(newMcpToken);
   formMsg('mcpTokenMsg', !!r?.ok, r?.ok ? T('mcpTokenInstalled') : r?.error || T('mcpTokenInstallFailed'));
+};
+// ---------- 团队：超级管理员 / 管理员生成团队令牌，客服绑定后对话里能查用户、开会员、加额度、确认收款 ----------
+const teamErr = (r) => {
+  const k = 'teamErr_' + (r?.error || '');
+  const t = T(k);
+  return t !== k ? t : r?.error && /[一-龥]/.test(r.error) ? r.error : errText(r);
+};
+const TEAM_STATUS = { pending: 'teamTokPending', bound: 'teamTokBound', expired: 'teamTokExpired', revoked: 'teamTokRevoked' };
+let teamMe = null;
+async function loadTeam() {
+  const r = await window.api.call('GET', '/aidesk/team/me');
+  if (!r.ok) return;
+  teamMe = r.data;
+  $('teamRole').textContent = T('teamRole_' + (teamMe.role || 'none')) + (teamMe.expiresAt ? ' · ' + T('teamUntil', { t: fmtTime(teamMe.expiresAt) }) : teamMe.role ? ' · ' + T('teamForever') : '');
+  $('teamRole').className = 'team-role' + (teamMe.role ? ' on' : '');
+  $('teamBindBox').classList.toggle('hidden', !!teamMe.canManage);
+  $('teamManage').classList.toggle('hidden', !teamMe.canManage);
+  $('teamAdminBox').classList.toggle('hidden', !teamMe.isOwner);
+  $('teamLogBox').classList.toggle('hidden', !teamMe.role);
+  if (teamMe.canManage) {
+    loadTeamTokens();
+    loadTeamMembers();
+  }
+  if (teamMe.role) loadTeamLogs();
+}
+async function loadTeamTokens() {
+  const r = await window.api.call('GET', '/aidesk/team/tokens');
+  const box = $('teamTokList');
+  box.innerHTML = '';
+  if (!r.ok) return;
+  for (const t of r.data.tokens) {
+    const el = document.createElement('div');
+    el.className = 'device';
+    const st = T(TEAM_STATUS[t.status] || t.status, { u: t.boundUsername || '' });
+    el.innerHTML = `<div><b>${esc(t.name)}</b><span class="tag team-st-${esc(t.status)}">${esc(st)}</span>
+      <div class="hint">${esc(T('teamRole_' + t.role))} · ${esc(t.days ? T('teamDaysN', { n: t.days }) : T('teamDaysForever'))} · ${esc(t.tokenPrefix)}… · ${esc(T('teamTokBy', { u: t.createdBy || '', t: fmtTime(t.createTime) }))}</div></div>
+      ${t.status === 'pending' || t.status === 'bound' ? `<button class="ghost small">${esc(T('teamTokRevoke'))}</button>` : '<span></span>'}`;
+    el.querySelector('button')?.addEventListener('click', async () => {
+      if (!confirm(T(t.status === 'bound' ? 'teamTokRevokeBoundConfirm' : 'teamTokRevokeConfirm', { name: t.name, u: t.boundUsername || '' }))) return;
+      const x = await window.api.call('DELETE', '/aidesk/team/tokens/' + t.id);
+      if (!x.ok) alert(teamErr(x));
+      loadTeam();
+    });
+    box.appendChild(el);
+  }
+}
+async function loadTeamMembers() {
+  const r = await window.api.call('GET', '/aidesk/team/members');
+  const box = $('teamMemberList');
+  box.innerHTML = '';
+  if (!r.ok) return;
+  for (const m of r.data.members) {
+    const el = document.createElement('div');
+    el.className = 'device';
+    const canRemove = m.role !== 'owner' && (m.role !== 'admin' || teamMe?.isOwner);
+    const exp = m.expiresAt ? (m.expired ? T('teamExpired') : T('teamUntil', { t: fmtTime(m.expiresAt) })) : T('teamForever');
+    el.innerHTML = `<div><b>${esc(m.nickname || m.username)}</b>${m.nickname && m.nickname !== m.username ? `<span class="hint"> @${esc(m.username)}</span>` : ''}<span class="tag team-role-${esc(m.role)}">${esc(T('teamRole_' + m.role))}</span>
+      <div class="hint">${esc(exp)}${m.tokenName ? ' · ' + esc(T('teamViaToken', { name: m.tokenName })) : ''}${m.grantedBy ? ' · ' + esc(T('teamGrantedBy', { u: m.grantedBy })) : ''}</div></div>
+      ${canRemove ? `<button class="ghost small danger-text">${esc(T('teamRemove'))}</button>` : '<span></span>'}`;
+    el.querySelector('button')?.addEventListener('click', async () => {
+      if (!confirm(T('teamRemoveConfirm', { u: m.username, role: T('teamRole_' + m.role) }))) return;
+      const x = await window.api.call('DELETE', '/aidesk/team/members/' + m.userId);
+      if (!x.ok) alert(teamErr(x));
+      loadTeam();
+    });
+    box.appendChild(el);
+  }
+}
+async function loadTeamLogs() {
+  const r = await window.api.call('GET', '/aidesk/team/logs?limit=50');
+  const box = $('teamLogList');
+  box.innerHTML = '';
+  if (!r.ok) return;
+  if (!r.data.logs.length) box.innerHTML = `<div class="hint">${esc(T('teamNoLogs'))}</div>`;
+  for (const l of r.data.logs) {
+    const el = document.createElement('div');
+    el.className = 'team-log';
+    el.innerHTML = `<span class="tl-time">${esc(fmtTime(l.createTime))}</span><span class="tl-who">${esc(l.operatorName)}</span><span class="tl-what">${esc(l.summary)}${l.source === 'chat' ? `<span class="tag">${esc(T('teamViaChat'))}</span>` : ''}</span>`;
+    box.appendChild(el);
+  }
+}
+$('teamBindBtn').onclick = async () => {
+  const tk = $('teamBindInput').value.trim();
+  if (!/^sht_/.test(tk)) return formMsg('teamBindMsg', false, T('teamErr_bad_token'));
+  const r = await window.api.call('POST', '/aidesk/team/bind', { token: tk });
+  if (!r.ok) return formMsg('teamBindMsg', false, teamErr(r));
+  $('teamBindInput').value = '';
+  await window.api.teamSync();
+  formMsg('teamBindMsg', true, T('teamBound', { role: T('teamRole_' + r.data.role) }));
+  loadTeam();
+};
+let newTeamToken = '';
+$('teamTokCreate').onclick = async () => {
+  const name = $('teamTokName').value.trim();
+  if (!name) return formMsg('teamTokMsg', false, T('teamErr_bad_name'));
+  const days = $('teamTokDays').value;
+  if (!days && !confirm(T('teamForeverConfirm', { name }))) return;
+  const r = await window.api.call('POST', '/aidesk/team/tokens', { name, role: $('teamTokRole').value, days: days || null });
+  if (!r.ok) return formMsg('teamTokMsg', false, teamErr(r));
+  newTeamToken = r.data.token;
+  $('teamTokValue').textContent = newTeamToken;
+  $('teamTokNew').classList.remove('hidden');
+  $('teamTokName').value = '';
+  formMsg('teamTokMsg', true, '');
+  loadTeamTokens();
+};
+$('teamTokCopy').onclick = async () => {
+  await navigator.clipboard.writeText(newTeamToken);
+  formMsg('teamTokMsg', true, T('copied'));
+};
+$('teamAdminBtn').onclick = async () => {
+  const account = $('teamAdminAccount').value.trim();
+  if (!account) return;
+  if (!confirm(T('teamSetAdminConfirm', { u: account }))) return;
+  const r = await window.api.call('POST', '/aidesk/team/admins', { account });
+  if (!r.ok) return formMsg('teamAdminMsg', false, teamErr(r));
+  $('teamAdminAccount').value = '';
+  formMsg('teamAdminMsg', true, T('teamAdminDone', { u: r.data.username }));
+  loadTeamMembers();
+  loadTeamLogs();
 };
 $('revokeOthers').onclick = async () => {
   const r = await window.api.call('POST', '/aidesk/account/sessions/revoke-others');

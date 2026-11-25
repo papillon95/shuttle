@@ -4171,9 +4171,11 @@ ipcMain.handle('connector:add', async (_e, code) => {
   return { ok: true, status: mcp.status() };
 });
 // 把 Shuttle 平台自己的 MCP（查额度、用量、会员）加到 Shuttle 里：令牌加密存在 mcpSecrets，不写明文
+// 管理员令牌（sha_ 开头，在管理后台生成）装成单独的「shuttle-admin」：能查用户、开会员、加额度、确认收款
 ipcMain.handle('mcp:installPlatform', (_e, tk) => {
-  if (!/^shm_[A-Za-z0-9]{20,80}$/.test(String(tk || ''))) return { ok: false, error: T('mcpTokenInstallFailed') };
-  const name = 'shuttle-platform';
+  tk = String(tk || '').trim();
+  if (!/^sh[ma]_[A-Za-z0-9]{20,80}$/.test(tk)) return { ok: false, error: T('mcpTokenInstallFailed') };
+  const name = tk.startsWith('sha_') ? 'shuttle-admin' : 'shuttle-platform';
   const base = (loadSettings().serverUrl || DEFAULT_SERVER).replace(/\/$/, '');
   saveMcpSecret(name, 'header', 'Authorization', 'Bearer ' + tk);
   const s = loadSettings();
@@ -4359,13 +4361,54 @@ ipcMain.handle('auth:logout', async () => {
   saveToken('');
   currentUser = null;
   conv = null;
+  removeTeamConnector();
   return true;
 });
+
+// ---------- 团队：超级管理员 / 管理员 / 客服登录后，对话里自动带上「团队工具」（查用户、开会员、加额度、确认收款） ----------
+// 用自己的登录令牌连 Shuttle 平台的 MCP，服务端按团队角色给工具；不是团队成员就去掉
+const TEAM_MCP = 'shuttle-team';
+let teamRoleSeen = null; // 上次连接时的团队角色
+function removeTeamConnector() {
+  const s = loadSettings();
+  if (!s.mcpServers?.[TEAM_MCP] && !s.mcpSecrets?.[TEAM_MCP]) return;
+  if (s.mcpServers) delete s.mcpServers[TEAM_MCP];
+  if (s.mcpSecrets) delete s.mcpSecrets[TEAM_MCP];
+  saveSettings(s);
+  applyMcp();
+}
+async function syncTeamConnector() {
+  const tk = token();
+  if (!currentUser || !tk) return removeTeamConnector(), null;
+  const r = await api('/aidesk/team/me', { token: tk });
+  if (!r.ok) return null;
+  if (!r.data.role) {
+    removeTeamConnector();
+    teamRoleSeen = null;
+    return r.data;
+  }
+  const base = (loadSettings().serverUrl || DEFAULT_SERVER).replace(/\/$/, '');
+  saveMcpSecret(TEAM_MCP, 'header', 'Authorization', 'Bearer ' + tk);
+  const s = loadSettings();
+  const want = { type: 'http', url: base + '/aidesk/mcp' };
+  const isNew = JSON.stringify(s.mcpServers?.[TEAM_MCP]) !== JSON.stringify(want);
+  if (isNew) {
+    s.mcpServers = { ...(s.mcpServers || {}), [TEAM_MCP]: want };
+    saveSettings(s);
+  }
+  applyMcp();
+  // 角色变了（比如管理员改成客服）：重连一次，拿按新角色给的工具列表
+  if (!isNew && teamRoleSeen && teamRoleSeen !== r.data.role) mcp.restart(TEAM_MCP);
+  teamRoleSeen = r.data.role;
+  return r.data;
+}
+ipcMain.handle('team:sync', () => syncTeamConnector().catch(() => null));
 
 // ---------- 登录后的同步：模型目录、设置 ----------
 async function afterLogin() {
   migrateLegacyConvs();
   await Promise.all([refreshCatalog().catch(() => {}), pullSettings().catch(() => {})]);
+  syncTeamConnector().catch(() => {});
   // 之后每 30 分钟、以及窗口切回前台时（最多 10 分钟一次）刷新模型列表：后台改了模型不用重启
   if (!catalogTimer) {
     let last = Date.now();
@@ -4375,6 +4418,7 @@ async function afterLogin() {
       const before = JSON.stringify(platformModels()); // 倍率、权限变了也要刷新
       await refreshCatalog().catch(() => {});
       if (JSON.stringify(platformModels()) !== before) send({ type: 'catalog-changed', convId: null });
+      syncTeamConnector().catch(() => {}); // 团队角色被收回 / 改了，也跟着更新
     };
     catalogTimer = setInterval(again, 30 * 60 * 1000);
     app.on('browser-window-focus', again);
@@ -4447,7 +4491,9 @@ function reportUsage(settings, usage, status, latencyMs, errorCode) {
 
 // 界面调用服务端业务接口的通道（账号、用量、反馈、公告、版本）
 ipcMain.handle('api:call', async (_e, method, pathname, body) => {
-  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|mcp-tokens|support|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
+  // 拒绝 .. 和编码过的点：不然 /aidesk/account/../../system/... 规范化后能访问后端别的接口
+  if (/(^|\/)\.\.(\/|$)|%2e|%2f|\\/i.test(String(pathname))) return { ok: false, error: 'forbidden' };
+  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|mcp-tokens|support|team|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
   // 语音识别最长 60 秒音频，腾讯云返回较慢，放宽超时
   // 上传付款截图要等 AI 看图核对，也放宽
   const timeout = pathname === '/aidesk/asr' ? 30000 : pathname === '/aidesk/support/proof' ? 90000 : undefined;
