@@ -173,6 +173,8 @@ function getProviders() {
     const have = new Set(out.openrouter.models.map((m) => m.id));
     out.openrouter.models.push(...BUILTIN_PROVIDERS.openrouter.models.filter((m) => !have.has(m.id)));
   }
+  // 编程包月套餐只在客户端内置（后台目录里没有），始终显示
+  for (const [id, p] of Object.entries(BUILTIN_PROVIDERS)) if (p.coding && !out[id]) out[id] = p;
   out.custom = BUILTIN_PROVIDERS.custom;
   return out;
 }

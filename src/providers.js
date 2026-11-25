@@ -62,6 +62,37 @@ module.exports = {
     ],
     keyUrl: 'https://openrouter.ai/settings/keys',
   },
+  // 厂商的编程包月套餐（Coding Plan）：每月固定价、额度大，用套餐专属的接口地址和 Key（普通接口地址不扣套餐额度、会另外收费）。
+  // 请求从用户电脑直接发给厂商，不经过我们的服务器。智谱 GLM Coding Plan 只允许在它列出的工具里用，所以没接。
+  ark_coding: {
+    name: '火山方舟套餐', nameEn: 'Ark plan', coding: true,
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+    models: [{ id: 'ark-code-latest', label: '自动（在方舟控制台切换模型）', labelEn: 'Auto (switch the model in the Ark console)' }],
+    keyUrl: 'https://console.volcengine.com/ark',
+  },
+  tencent_coding: {
+    name: '腾讯云套餐', nameEn: 'Tencent plan', coding: true,
+    baseUrl: 'https://api.lkeap.cloud.tencent.com/coding/v3',
+    models: [
+      { id: 'tc-code-latest', label: '自动', labelEn: 'Auto' },
+      { id: 'kimi-k2.5', label: 'Kimi K2.5' },
+      { id: 'glm-5', label: 'GLM-5' },
+      { id: 'minimax-m2.5', label: 'MiniMax M2.5' },
+    ],
+    keyUrl: 'https://console.cloud.tencent.com/lkeap',
+  },
+  aliyun_coding: {
+    name: '阿里百炼套餐', nameEn: 'Bailian plan', coding: true,
+    baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+    models: [
+      { id: 'qwen3.7-plus', label: 'Qwen3.7 Plus' },
+      { id: 'qwen3.6-plus', label: 'Qwen3.6 Plus' },
+      { id: 'kimi-k2.5', label: 'Kimi K2.5' },
+      { id: 'glm-5', label: 'GLM-5' },
+      { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
+    ],
+    keyUrl: 'https://bailian.console.aliyun.com/',
+  },
   custom: {
     name: '自定义接口', nameEn: 'Custom endpoint',
     baseUrl: '',

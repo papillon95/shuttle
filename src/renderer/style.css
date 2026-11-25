@@ -230,6 +230,9 @@ input, select { background: var(--panel); border: 1px solid var(--border); borde
 .keyhead { display: grid; grid-template-columns: 90px 1fr 1fr 60px 56px; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 10px; }
 .keyrow { display: grid; grid-template-columns: 90px 1fr 1fr 60px 56px; gap: 8px; align-items: center; margin: 8px 0; font-size: 13px; }
 .keyrow a { color: var(--accent); font-size: 12px; cursor: pointer; }
+.keygroup { margin: 18px 0 4px; padding-top: 12px; border-top: 1px solid var(--border, #e5e7eb); font-size: 12.5px; line-height: 1.6; }
+.keygroup b { display: block; font-size: 13px; margin-bottom: 2px; }
+.keygroup span { color: var(--muted, #888); }
 
 .diff { font: 12px/1.5 Menlo, monospace; border: 1px solid var(--border); border-radius: 8px; max-height: 55vh; overflow: auto; margin: 10px 0; }
 .diff .line { display: flex; white-space: pre; }

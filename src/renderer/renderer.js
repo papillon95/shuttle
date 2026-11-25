@@ -2220,7 +2220,15 @@ function parseExtraModels(value, p) {
 function openSettings(tab = 'models') {
   const list = $('keyList');
   list.innerHTML = '';
+  let codingHead = false;
   for (const [id, p] of Object.entries(settings.providers)) {
+    if (p.coding && !codingHead) {
+      codingHead = true;
+      const h = document.createElement('div');
+      h.className = 'keygroup';
+      h.innerHTML = `<b>${esc(T('codingPlanTitle'))}</b><span>${esc(T('codingPlanTip'))}</span>`;
+      list.appendChild(h);
+    }
     const row = document.createElement('div');
     row.className = 'keyrow';
     const builtin = p.models.map((m) => m.id);
