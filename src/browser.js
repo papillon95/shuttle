@@ -144,13 +144,18 @@ function ensureView(s = S()) {
 }
 
 // 只显示界面当前对话的页面，其他对话的页面藏起来（还在后台，AI 照样能操作）
+// 最近一次有效的面板尺寸：面板被弹窗暂时盖住、或网页在后台时，也按这个尺寸排版，
+// 不然隐藏的网页宽度是 0，AI 读到的就是挤成一团的页面
+let lastGood = { x: 0, y: 0, width: 900, height: 700 };
 function applyBounds() {
-  const ok = !suspended && bounds.width > 20 && bounds.height > 20;
+  const sized = bounds.width > 20 && bounds.height > 20;
+  if (sized) lastGood = bounds;
+  const ok = !suspended && sized;
   for (const s of slots.values()) {
     if (!s.view) continue;
     const show = ok && s.visible && isActive(s);
     s.view.setVisible(show);
-    if (show) s.view.setBounds(bounds);
+    s.view.setBounds(show ? bounds : lastGood);
   }
 }
 

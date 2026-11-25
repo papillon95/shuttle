@@ -4364,9 +4364,9 @@ async function afterLogin() {
     const again = async () => {
       if (!currentUser || Date.now() - last < 10 * 60 * 1000) return;
       last = Date.now();
-      const before = JSON.stringify(platformModels().map((m) => m.value));
+      const before = JSON.stringify(platformModels()); // 倍率、权限变了也要刷新
       await refreshCatalog().catch(() => {});
-      if (JSON.stringify(platformModels().map((m) => m.value)) !== before) send({ type: 'catalog-changed', convId: null });
+      if (JSON.stringify(platformModels()) !== before) send({ type: 'catalog-changed', convId: null });
     };
     catalogTimer = setInterval(again, 30 * 60 * 1000);
     app.on('browser-window-focus', again);
