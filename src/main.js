@@ -3477,8 +3477,9 @@ function answerConfirm(id, ok, by, values) {
 ipcMain.handle('confirm:reply', (_e, id, ok, values) => answerConfirm(id, ok, 'desktop', values));
 ipcMain.handle('open:external', (_e, url) => shell.openExternal(url));
 // 用户协议 / 隐私政策：服务器上的网页，用系统浏览器打开（改了内容要同步改版本号）
-const TERMS_VERSION = '2026-11-19';
-ipcMain.handle('open:terms', (_e, doc) => shell.openExternal((loadSettings().serverUrl || DEFAULT_SERVER).replace(/\/$/, '') + '/aidesk/web/' + (doc === 'privacy' ? 'privacy' : 'terms') + '.html'));
+const TERMS_VERSION = '2026-11-25';
+// 带上版本号：系统浏览器之前缓存过旧版也会重新打开新版
+ipcMain.handle('open:terms', (_e, doc) => shell.openExternal((loadSettings().serverUrl || DEFAULT_SERVER).replace(/\/$/, '') + '/aidesk/web/' + (doc === 'privacy' ? 'privacy' : 'terms') + '.html?v=' + TERMS_VERSION));
 // 内置浏览器面板
 ipcMain.handle('browser:show', () => browser.show());
 ipcMain.handle('browser:hide', () => browser.hide());
