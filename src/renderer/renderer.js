@@ -1832,9 +1832,12 @@ window.addEventListener('resize', syncBrowserBounds);
 }
 
 // ---------- 设置弹窗 ----------
+const SAVE_TABS = ['models', 'behavior', 'safety'];
 function switchTab(name) {
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.tab-body section').forEach((sec) => sec.classList.toggle('hidden', sec.dataset.pane !== name));
+  // 「保存 / 取消」只在要点保存才生效的页面显示；其他页面改了立即生效，右上角关闭即可
+  $('settingsFoot').classList.toggle('hidden', !SAVE_TABS.includes(name));
   if (name === 'data') refreshDataInfo();
   if (name === 'remote') refreshRemote();
   if (name === 'experts') refreshExpertsPane();
@@ -1950,17 +1953,34 @@ async function refreshDataInfo() {
 
 // 配色：[id, 浅色版的 侧栏 / 对话区 / 强调色]（只用来画选择卡片）
 const PALETTES = [
-  ['default', '#f0efeb', '#ffffff', '#2f6fde'],
+  ['default', '#121830', '#ffffff', '#4a6bff'],
   ['forest', '#ecf0ea', '#ffffff', '#2f855a'],
   ['ocean', '#ebeff4', '#ffffff', '#0e7490'],
   ['lavender', '#efedf5', '#ffffff', '#7c5cd6'],
   ['sand', '#f3eee6', '#fffdfa', '#c2410c'],
   ['rose', '#f5edee', '#ffffff', '#c93c66'],
 ];
+// Windows：右上角最小化 / 关闭按钮那一块的底色跟顶栏一致（换配色、深浅色时都要更新）
+function syncTitleBar() {
+  if (document.documentElement.classList.contains('os-mac') || !window.api.titleBar) return;
+  requestAnimationFrame(() => {
+    const top = document.querySelector('.topbar');
+    if (!top) return;
+    const hex = (c) => {
+      const m = String(c).match(/\d+(\.\d+)?/g);
+      return m && m.length >= 3 ? '#' + m.slice(0, 3).map((x) => Math.round(+x).toString(16).padStart(2, '0')).join('') : null;
+    };
+    const color = hex(getComputedStyle(top).backgroundColor);
+    const symbolColor = hex(getComputedStyle(document.body).color);
+    if (color && symbolColor) window.api.titleBar({ color, symbolColor });
+  });
+}
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncTitleBar);
 function applyPalette(id) {
   const p = PALETTES.some((x) => x[0] === id) ? id : 'default';
   if (p === 'default') delete document.documentElement.dataset.palette;
   else document.documentElement.dataset.palette = p;
+  syncTitleBar();
   try { localStorage.setItem('shuttle.palette', p); } catch {}
   document.querySelectorAll('#paletteCards button').forEach((b) => b.classList.toggle('on', b.dataset.palette === p));
 }
@@ -2279,6 +2299,13 @@ $('temperature').oninput = (e) => ($('tempVal').textContent = e.target.value);
 $('settingsBtn').onclick = () => openSettings();
 
 $('settingsCancel').onclick = () => $('settingsModal').classList.add('hidden');
+$('settingsClose').onclick = () => $('settingsModal').classList.add('hidden');
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || $('settingsModal').classList.contains('hidden')) return;
+  // 设置上面还盖着别的弹窗时，先关那个
+  if ([...document.querySelectorAll('.modal:not(.hidden)')].some((m) => m.id !== 'settingsModal')) return;
+  $('settingsModal').classList.add('hidden');
+});
 $('backupsBtn').onclick = () => window.api.openBackups();
 $('dataDirBtn').onclick = () => window.api.openDataDir();
 $('clearBackupsBtn').onclick = async () => {
@@ -2351,9 +2378,12 @@ document.querySelectorAll('#themeCards button').forEach(
 );
 document.querySelectorAll('#fontSeg button').forEach(
   (b) =>
-    (b.onclick = () => {
+    (b.onclick = async () => {
       $('fontSize').value = b.dataset.font;
       syncAppearanceUI();
+      // 和主题、语言一样立即生效，不用再点保存
+      settings = await window.api.saveSettings({ fontSize: Number(b.dataset.font) });
+      applyAppearance();
     })
 );
 

@@ -115,6 +115,7 @@
   <!-- 设置弹窗 -->
   <div class="modal hidden" id="settingsModal">
     <div class="card settings">
+      <button class="settings-close" id="settingsClose" data-i18n-title="close" title="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       <nav class="tabs">
         <div class="tabs-title" data-i18n="settings"></div>
         <button data-tab="account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span data-i18n="tabAccount"></span></button>
@@ -480,7 +481,7 @@
           </div>
         </section>
 
-        <div class="row settings-foot">
+        <div class="row settings-foot" id="settingsFoot">
           <div class="spacer"></div>
           <button id="settingsCancel" class="ghost" data-i18n="cancel"></button>
           <button id="settingsSave" class="primary" data-i18n="save"></button>

@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('api', {
   remoteQr: () => ipcRenderer.invoke('remote:qr'),
   makeQr: (text) => ipcRenderer.invoke('qr:make', text),
   uiFont: () => ipcRenderer.invoke('font:ui'),
+  // Windows：右上角系统按钮的底色跟着顶栏变（换配色、深浅色时）
+  titleBar: (c) => ipcRenderer.send('ui:titlebar', c),
   remoteUntrust: (sid) => ipcRenderer.invoke('remote:untrust', sid),
   convSyncNow: () => ipcRenderer.invoke('convsync:now'),
   mcpGet: () => ipcRenderer.invoke('mcp:get'),

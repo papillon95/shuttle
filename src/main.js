@@ -4478,10 +4478,18 @@ ipcMain.handle('open:admin', () => shell.openExternal((loadSettings().serverUrl 
 const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let updateTimer = null;
 /** Windows 右上角系统按钮的底色，跟顶栏一致（顶栏高 48px，见 style.css 的 .os-win .topbar） */
+let overlayColors = null; // 界面告诉我们的顶栏颜色（换配色、深浅色时会变）
 function titleBarOverlay() {
   const dark = nativeTheme.shouldUseDarkColors;
-  return { color: dark ? '#242423' : '#ffffff', symbolColor: dark ? '#d4d3ce' : '#3b3f45', height: 48 };
+  if (overlayColors) return { ...overlayColors, height: 48 };
+  return { color: dark ? '#12141c' : '#ffffff', symbolColor: dark ? '#d6d8e2' : '#3b3f45', height: 48 };
 }
+ipcMain.on('ui:titlebar', (e, c) => {
+  const hex = (v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+  if (!c || !hex(c.color) || !hex(c.symbolColor) || process.platform === 'darwin') return;
+  overlayColors = { color: c.color, symbolColor: c.symbolColor };
+  if (win && !win.isDestroyed() && e.sender === win.webContents) win.setTitleBarOverlay?.(titleBarOverlay());
+});
 function scheduleUpdateChecks() {
   if (updateTimer) return;
   const run = async () => {

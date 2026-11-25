@@ -72,10 +72,20 @@ function mdBlock(text) {
     if (/^\s*([-*+•]|\d+[.)、])\s+/.test(line)) {
       flushPara();
       const items = [];
-      while (i < lines.length && (/^\s*([-*+•]|\d+[.)、])\s+/.test(lines[i]) || (/^\s{2,}\S/.test(lines[i]) && items.length))) {
+      const isItem = (l) => /^\s*([-*+•]|\d+[.)、])\s+/.test(l || '');
+      for (;;) {
+        // 列表项之间隔着空行（AI 常这样写）也算同一个列表，不然每项都从 1 开始编号
+        if (i < lines.length && !lines[i].trim() && items.length) {
+          let j = i;
+          while (j < lines.length && !lines[j].trim()) j++;
+          // 只合并同一种列表（编号接编号、圆点接圆点）
+          if (isItem(lines[j]) && /^\s*\d/.test(lines[j]) === items[items.length - 1].ordered) { i = j; continue; }
+          break;
+        }
+        if (!(i < lines.length && (isItem(lines[i]) || (/^\s{2,}\S/.test(lines[i]) && items.length)))) break;
         const l = lines[i++];
         const lm = /^(\s*)([-*+•]|\d+[.)、])\s+(.*)$/.exec(l);
-        if (lm) items.push({ indent: lm[1].replace(/\t/g, '  ').length, ordered: /\d/.test(lm[2]), text: lm[3] });
+        if (lm) items.push({ indent: lm[1].replace(/\t/g, '  ').length, ordered: /\d/.test(lm[2]), num: parseInt(lm[2], 10), text: lm[3] });
         else items[items.length - 1].text += ' ' + l.trim();
       }
       i--;
@@ -87,7 +97,8 @@ function mdBlock(text) {
         const tag = it.ordered ? 'ol' : 'ul';
         while (stack.length > lv + 1) html += `</li></${stack.pop()}>`;
         if (stack.length === lv) {
-          html += `<${tag}>`;
+          // 编号不从 1 开始（比如中间被段落隔开后接着写 3.）时保留原来的编号
+          html += tag === 'ol' && it.num > 1 ? `<ol start="${it.num}">` : `<${tag}>`;
           stack.push(tag);
         } else html += '</li>';
         html += `<li>${mdInline(it.text)}`;
