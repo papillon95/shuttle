@@ -131,10 +131,24 @@ const definitions = [
 
 function safePath(root, p) {
   const abs = path.resolve(root, p || '.');
-  const rel = path.relative(root, abs);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(T('pathEscape', { p }));
+  const inside = (base, target) => {
+    const rel = path.relative(base, target);
+    return !(rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel));
+  };
+  if (!inside(root, abs)) throw new Error(T('pathEscape', { p }));
+  // 再按真实路径判断一次：工作文件夹里的符号链接（快捷方式）可能指向外面，比如 docs -> ~
+  // 目标还不存在（要新建的文件）时，看它最近一个已经存在的上级目录
+  let realRoot = root;
+  try { realRoot = fs.realpathSync(root); } catch {}
+  let anc = abs;
+  const rest = [];
+  while (!fs.existsSync(anc) && path.dirname(anc) !== anc) {
+    rest.unshift(path.basename(anc));
+    anc = path.dirname(anc);
   }
+  let real = abs;
+  try { real = path.join(fs.realpathSync(anc), ...rest); } catch {}
+  if (!inside(realRoot, real)) throw new Error(T('pathEscape', { p }));
   return abs;
 }
 

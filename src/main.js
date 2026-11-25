@@ -1961,7 +1961,13 @@ async function browserTool(name, args, root) {
   try {
     switch (name) {
       case 'browser_open': {
-        await browser.navigate(localPageUrl(args.url, root) || args.url, lang, args.site);
+        const target = localPageUrl(args.url, root) || args.url;
+        // 本机文件只能打开工作文件夹里的（防止网页诱导 AI 读 ~/.ssh 之类的文件再发出去）
+        if (/^\s*file:/i.test(String(target || ''))) {
+          if (!root) throw new Error(T('pathEscape', { p: target }));
+          tools.safePath(root, require('url').fileURLToPath(String(target).trim()));
+        }
+        await browser.navigate(target, lang, args.site);
         const snap = await browser.snapshot();
         return formatSnapshot(snap, 6000) + loginWallHint(snap);
       }
@@ -4377,8 +4383,10 @@ async function afterLogin() {
   remoteApply();
 }
 
-// 同步到服务器的设置项（API Key、工作目录等只留在本机）
-const SYNC_KEYS = ['customInstructions', 'temperature', 'maxSteps', 'suggestNext', 'approval', 'blockedCommands', 'commandTimeout', 'ignoreDirs', 'theme', 'palette', 'fontSize', 'fontFamily', 'language', 'convSync'];
+// 同步到服务器的设置项（API Key、工作目录等只留在本机）。
+// 和安全有关的（审批方式、禁止的命令、命令超时、对话上传）也只留在本机：
+// 不然账号被盗后，别人在另一台设备上把审批改成「全部自动」，这台电脑同步下来就会不经确认执行命令
+const SYNC_KEYS = ['customInstructions', 'temperature', 'maxSteps', 'suggestNext', 'ignoreDirs', 'theme', 'palette', 'fontSize', 'fontFamily', 'language'];
 const token = () => decryptKey(loadSettings().authToken || '');
 
 async function pullSettings() {
