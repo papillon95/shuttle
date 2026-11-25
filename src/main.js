@@ -816,6 +816,31 @@ class PlatformError extends Error {
   }
 }
 
+// 读流式回复时的看门狗：模型一直没有新数据超过 STREAM_IDLE_MS（厂商卡住），就停掉并报错，不让界面一直转圈
+const STREAM_IDLE_MS = 180000;
+async function* idleChunks(body, ms = STREAM_IDLE_MS) {
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      let timer;
+      const stall = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(T('modelStalled', { s: Math.round(ms / 1000) }))), ms)));
+      let r;
+      try {
+        r = await Promise.race([reader.read(), stall]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (r.done) return;
+      yield r.value;
+    }
+  } catch (e) {
+    reader.cancel().catch(() => {});
+    throw e;
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+}
+
 async function callModel(settings, signal, c) {
   // 平台模式：请求发给我们自己的服务端，用登录凭证鉴权，服务端选 Key、扣额度
   const { baseUrl, model, key } = settings.useOwnKey
@@ -939,7 +964,7 @@ async function callModel(settings, signal, c) {
       if (tc.function?.arguments) t.function.arguments += tc.function.arguments;
     }
   };
-  for await (const part of res.body) {
+  for await (const part of idleChunks(res.body)) {
     buf += decoder.decode(part, { stream: true });
     const lines = buf.split('\n');
     buf = lines.pop();
@@ -3180,7 +3205,7 @@ async function quickAskModel(messages, onDelta, signal) {
   let full = '';
   let buf = '';
   const decoder = new TextDecoder();
-  for await (const chunk of res.body) {
+  for await (const chunk of idleChunks(res.body)) {
     buf += decoder.decode(chunk, { stream: true });
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
@@ -3590,6 +3615,20 @@ async function saveImageAs(src) {
 }
 ipcMain.handle('image:copy', (_e, src) => copyImage(src));
 ipcMain.handle('image:save', (_e, src) => saveImageAs(src));
+// 保存网上的图片（目前只用于收款码）：只允许我们自己的域名
+ipcMain.handle('image:saveUrl', async (_e, url) => {
+  let u;
+  try { u = new URL(String(url)); } catch { return false; }
+  if (u.protocol !== 'https:' || !['richbrian.site', 'mamahug-1256157831.cos.ap-guangzhou.myqcloud.com'].includes(u.hostname)) return false;
+  const res = await fetch(u.href, { signal: AbortSignal.timeout(20000) }).catch(() => null);
+  if (!res?.ok) return false;
+  const buf = Buffer.from(await res.arrayBuffer());
+  const ext = (path.extname(u.pathname) || '.jpg').toLowerCase().replace(/[^.a-z]/g, '') || '.jpg';
+  const r = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), 'shuttle-pay' + ext), filters: [{ name: 'Image', extensions: [ext.slice(1)] }] });
+  if (r.canceled || !r.filePath) return false;
+  fs.writeFileSync(r.filePath, buf);
+  return true;
+});
 ipcMain.handle('image:menu', (e, src) => {
   const it = imageSource(src);
   if (!it) return;

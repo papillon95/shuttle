@@ -3041,7 +3041,8 @@ function showManualPay(o, justCreated) {
   const m = payManual || {};
   // 客服微信可能配了好几个（「A 或 B」「A、B」），拆开分别显示、分别复制
   const wechats = String(m.wechat || '').split(/\s*(?:或|、|,|，|\/|\s)\s*/).map((x) => x.trim()).filter(Boolean);
-  const img = (src, label) => (/^https?:\/\//.test(src || '') ? `<figure class="pay-img"><img src="${esc(src)}" alt=""><figcaption>${esc(label)}</figcaption></figure>` : '');
+  const img = (src, label) => (/^https?:\/\//.test(src || '') ? `<figure class="pay-img"><img src="${esc(src)}" alt="" data-zoom="${esc(src)}" title="${esc(T('payQrZoom'))}"><figcaption>${esc(label)}</figcaption>
+    <div class="pay-img-acts"><button class="ghost small" data-zoom="${esc(src)}">${esc(T('payQrZoom'))}</button><button class="ghost small" data-save="${esc(src)}">${esc(T('payQrSave'))}</button></div></figure>` : '');
   const copyBtn = (v, label) => `<button class="ghost small" data-copy="${esc(v)}">${esc(label || T('copy'))}</button>`;
   box.innerHTML = `<b>${esc(T(justCreated ? 'orderCreated' : 'manualPayTitle'))}</b>
     <div class="pay-sorry">${esc(T('paySorry'))}</div>
@@ -3058,9 +3059,32 @@ function showManualPay(o, justCreated) {
         ${m.qr ? `<div class="pay-imgs">${img(m.qr, T('manualSupportQr'))}</div>` : ''}</div>` : ''}
     </div>`;
   box.querySelector('[data-proof]').onclick = () => pickProof(o.orderNo);
+  box.querySelectorAll('[data-zoom]').forEach((el) => (el.onclick = () => zoomQr(el.dataset.zoom)));
+  box.querySelectorAll('[data-save]').forEach((el) => (el.onclick = async () => {
+    if (await window.api.imageSaveUrl(el.dataset.save)) showToast(T('payQrSaved'), 'ok');
+  }));
   box.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = async () => {
     try { await navigator.clipboard.writeText(b.dataset.copy); showToast(T('copied'), 'info'); } catch {}
   }));
+}
+
+// 收款码放大：盖住整个窗口，方便手机扫；点空白处或按 Esc 关闭
+function zoomQr(src) {
+  let v = document.getElementById('qrZoom');
+  if (!v) {
+    v = document.createElement('div');
+    v.id = 'qrZoom';
+    v.className = 'qr-zoom';
+    v.innerHTML = `<img alt=""><p></p><div class="qr-zoom-acts"><button class="primary" data-act="save"></button><button class="ghost" data-act="close"></button></div>`;
+    document.body.appendChild(v);
+    v.onclick = (e) => { if (e.target === v || e.target.dataset.act === 'close') v.remove(); };
+    document.addEventListener('keydown', function esc(e) { if (e.key === 'Escape' && document.getElementById('qrZoom')) { document.getElementById('qrZoom').remove(); } });
+  }
+  v.querySelector('img').src = src;
+  v.querySelector('p').textContent = T('payQrZoomHint');
+  v.querySelector('[data-act="save"]').textContent = T('payQrSave');
+  v.querySelector('[data-act="close"]').textContent = T('close');
+  v.querySelector('[data-act="save"]').onclick = async () => { if (await window.api.imageSaveUrl(src)) showToast(T('payQrSaved'), 'ok'); };
 }
 
 // ---------- 微信扫码付款：显示二维码，每 2 秒查一次订单，付了就开通 ----------

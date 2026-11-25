@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
   openImage: (p) => ipcRenderer.invoke('open:image', p),
   imageCopy: (src) => ipcRenderer.invoke('image:copy', src),
   imageSave: (src) => ipcRenderer.invoke('image:save', src),
+  imageSaveUrl: (url) => ipcRenderer.invoke('image:saveUrl', url),
   imageMenu: (src) => ipcRenderer.invoke('image:menu', src),
   filePath: (file) => {
     try {

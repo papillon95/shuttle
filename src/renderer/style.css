@@ -1245,3 +1245,12 @@ body.has-bg .log .msg.user, body.has-bg .log pre, body.has-bg .log code, body.ha
 :root[data-palette="rose"] { --nav-solid: #26111e; }
 body.has-bg .sidebar { background: color-mix(in srgb, var(--nav-solid) var(--glass-side, 75%), transparent); backdrop-filter: blur(18px) saturate(1.2); }
 body.has-bg .sidebar .conv .t, body.has-bg .sidebar .folder-group, body.has-bg .sidebar .side-label { text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
+
+/* 付款框：收款码可以放大、保存 */
+.pay-img img[data-zoom] { cursor: zoom-in; }
+.pay-img-acts { display: flex; justify-content: center; gap: 6px; margin-top: 6px; }
+.qr-zoom { position: fixed; inset: 0; z-index: 200; background: rgba(8, 10, 20, .88); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; backdrop-filter: blur(6px); }
+.qr-zoom img { width: min(420px, 70vh); height: auto; border-radius: 16px; background: #fff; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
+.qr-zoom p { color: rgba(255, 255, 255, .85); font-size: 14px; max-width: 440px; text-align: center; margin: 0; line-height: 1.6; }
+.qr-zoom-acts { display: flex; gap: 10px; }
+.qr-zoom-acts .ghost { color: #fff; border-color: rgba(255, 255, 255, .35); }
