@@ -2108,7 +2108,8 @@ function applyBackground() {
     st.setProperty('--bg-blur', bgVal('bgBlur') + 'px');
     st.setProperty('--bg-dim', bgVal('bgDim') / 100);
     st.setProperty('--glass', bgVal('bgGlass') + '%');
-    st.setProperty('--glass-side', Math.max(0, Number(bgVal('bgGlass')) - 10) + '%');
+    // 侧栏是深色底白字：玻璃再透也至少留 62% 的底色，不然背景图一亮字就看不见了
+    st.setProperty('--glass-side', Math.max(62, Number(bgVal('bgGlass')) + 5) + '%');
     st.setProperty('--glass-strong', Math.min(100, Number(bgVal('bgGlass')) + 15) + '%');
   } else img.style.backgroundImage = '';
   renderBgControls();
