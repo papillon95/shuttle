@@ -275,6 +275,16 @@ function toolSummary(name, a) {
   if (name === 'ask_expert') return (a.expert ? a.expert + ' · ' : '') + (a.question || '');
   return a.path || '';
 }
+// 逐行对比（改文件 / 写文件、确认框共用）：del 红、add 绿、ctx 原样、gap 表示中间省略了没改的行
+function diffHtml(rows) {
+  return rows
+    .map((l) =>
+      l.type === 'gap'
+        ? '<div class="line gap"><span class="no">⋯</span><span></span></div>'
+        : `<div class="line ${l.type}"><span class="no">${l.no}</span><span class="sign">${l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' '}</span><span>${esc(l.text)}</span></div>`
+    )
+    .join('');
+}
 function renderTool(evt) {
   let el = toolEls[evt.id];
   if (!el) {
@@ -290,6 +300,14 @@ function renderTool(evt) {
     const failed = /^(错误|用户拒绝|已中断|Error|User rejected|Interrupted)/.test(evt.result);
     el.querySelector('.st').textContent = failed ? '⚠️' : '✓';
     el.querySelector('pre').textContent = evt.result;
+    // 改了文件：标题后面显示 +几 -几，展开就是逐行对比（改动不多时默认展开）
+    if (evt.diff && evt.diff.rows?.length && !failed && !el.querySelector('.diff')) {
+      el.querySelector('summary').insertAdjacentHTML('beforeend', `<span class="dstat"><b class="a">+${evt.diff.add}</b> <b class="d">-${evt.diff.del}</b></span>`);
+      el.querySelector('pre').insertAdjacentHTML('beforebegin', `<div class="diff tool-diff">${diffHtml(evt.diff.rows)}</div>`);
+      el.querySelector('pre').classList.add('hidden');
+      el.classList.add('has-diff');
+      if (evt.diff.rows.length <= 60) el.open = true;
+    }
   }
 }
 
@@ -599,7 +617,9 @@ $('expertAllowEdits').onchange = async (e) => {
 };
 
 // 把保存的消息历史重新渲染出来
-function renderMessages(messages, compact) {
+let toolDiffsOf = null; // 当前对话里改文件的逐行对比（callId -> {rows, add, del}），渲染历史时用
+function renderMessages(messages, compact, toolDiffs) {
+  toolDiffsOf = toolDiffs || null;
   setSuggestion('');
   hideLongBanner();
   clearLog();
@@ -621,7 +641,7 @@ function renderMessages(messages, compact) {
       }
     } else if (m.role === 'tool') {
       const call = calls[m.tool_call_id] || { name: '?' };
-      renderTool({ id: m.tool_call_id, ...call, status: 'done', result: m.content });
+      renderTool({ id: m.tool_call_id, ...call, status: 'done', result: m.content, diff: toolDiffsOf?.[m.tool_call_id] });
       // 生成的图片：从工具结果里取出保存路径（相对工作区），显示预览
       const voiced = call.name === 'text_to_speech' && /(?:已保存配音|Saved voice-over) (.+?)(?:（| \()/.exec(m.content || '');
       if (voiced && settings.workspace) showToolAudio(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + voiced[1]);
@@ -921,7 +941,7 @@ async function openConv(id) {
   }
   settings.workspace = c.workspace || '';
   renderWorkspace();
-  renderMessages(c.messages, c.compact);
+  renderMessages(c.messages, c.compact, c.toolDiffs);
   window.api.convContext().then((ctx) => currentConvId === c.id && renderCtx(ctx));
   streamEl = null;
   thinkingEl = null;
@@ -1709,9 +1729,7 @@ function showConfirm(evt) {
   if (evt.command) {
     body.innerHTML = `<div class="cmd">${evt.tool === 'run_command' ? '$ ' : ''}${esc(evt.command)}</div>`;
   } else {
-    body.innerHTML = evt.diff
-      .map((l) => `<div class="line ${l.type}"><span class="no">${l.no}</span><span>${l.type === 'add' ? '+ ' : '- '}${esc(l.text)}</span></div>`)
-      .join('');
+    body.innerHTML = diffHtml(evt.diff);
   }
   $('confirmModal').classList.remove('hidden');
   const done = (ok) => {

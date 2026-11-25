@@ -237,6 +237,14 @@ input, select { background: var(--panel); border: 1px solid var(--border); borde
 .diff .add { background: var(--add-bg); color: var(--add-text); }
 .diff .del { background: var(--del-bg); color: var(--del-text); }
 .diff .cmd { padding: 12px; white-space: pre-wrap; }
+.diff .sign { width: 14px; flex-shrink: 0; user-select: none; opacity: 0.7; }
+.diff .ctx { color: var(--text-soft); }
+.diff .gap { color: var(--muted); background: var(--side); }
+.tool .tool-diff { margin: 0 10px 10px; max-height: 360px; background: var(--panel); }
+.tool.has-diff[open] { width: auto; }
+.tool .dstat { flex: none; font: 600 12px var(--mono); }
+.tool .dstat .a { color: var(--add-text); font-weight: 600; }
+.tool .dstat .d { color: var(--del-text); font-weight: 600; }
 .cursor { display: inline-block; width: 7px; height: 1em; background: var(--accent); vertical-align: text-bottom; margin-left: 2px; animation: blink 1s infinite; }
 
 .card.settings { width: min(900px, 94vw); height: min(640px, 88vh); padding: 0; display: flex; overflow: hidden; }

@@ -2497,6 +2497,8 @@ async function textToSpeech(args, root, callId, signal) {
     (res.srtAbs ? '\n' + T('ttsSrt', { path: path.relative(root, res.srtAbs).split(path.sep).join('/') }) : '') + (res.note ? '\n' + res.note : '');
 }
 
+// 改文件 / 写文件的逐行对比，执行完由调用处取走（callId -> {path, rows}）
+const toolDiffs = new Map();
 async function executeTool(name, args, root, signal, callId) {
   if (name === 'ask_expert') return expertTool(args, signal);
   if (!root) {
@@ -2547,19 +2549,26 @@ async function executeTool(name, args, root, signal, callId) {
       }
       tools.backup(BACKUP_DIR(), abs);
       fs.writeFileSync(abs, newText);
+      if (callId) toolDiffs.set(callId, { path: args.path, rows: diff });
       return T('edited', { path: args.path }) + (how === 'loose' ? T('editedLoose', { line: startLine }) : '') + (await autoPreview(abs));
     }
     case 'write_file': {
       const abs = tools.safePath(root, args.path);
       const exists = fs.existsSync(abs);
+      // 覆盖已有文件时只列出改了的行；新建文件就是全部新增
+      let before = '';
+      try {
+        if (exists) before = fs.readFileSync(abs, 'utf8');
+      } catch {}
+      const diff = tools.lineDiff(before, args.content);
       if (needsConfirm(name)) {
-        const diff = args.content.split('\n').slice(0, 300).map((l, i) => ({ type: 'add', no: i + 1, text: l }));
         const ok = await askConfirm({ tool: name, title: T(exists ? 'confirmOverwrite' : 'confirmCreate', { path: args.path }), diff });
         if (!ok) return T('rejectedWrite');
       }
       tools.backup(BACKUP_DIR(), abs);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, args.content);
+      if (callId) toolDiffs.set(callId, { path: args.path, rows: diff });
       return T(exists ? 'overwritten' : 'created', { path: args.path }) + (await autoPreview(abs));
     }
     case 'run_command': {
@@ -2978,7 +2987,12 @@ async function runLoop(settings, c, msgs, userText, signal) {
             result = T('errorPrefix') + e.message;
           }
         }
-        send({ type: 'tool', id: call.id, name: call.function.name, args, status: 'done', result });
+        // 改文件 / 写文件：带上逐行对比，界面直接显示改了什么；存在对话的 toolDiffs 里（不发给模型），重新打开也能看
+        const d = toolDiffs.get(call.id);
+        toolDiffs.delete(call.id);
+        const diff = d ? { path: d.path, rows: d.rows, ...tools.diffStats(d.rows) } : undefined;
+        if (diff) (c.toolDiffs ||= {})[call.id] = diff;
+        send({ type: 'tool', id: call.id, name: call.function.name, args, status: 'done', result, diff });
         msgs.push({ role: 'tool', tool_call_id: call.id, content: result });
         saveConv(c);
       }

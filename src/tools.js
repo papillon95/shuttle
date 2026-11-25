@@ -526,15 +526,64 @@ function applyEdit(text, oldStr, newStr) {
   throw new Error(near ? T('notFoundNear') + '\n' + near : T('notFound'));
 }
 
-// 生成一个简单的 diff 预览，供用户确认；newText 是改完后的全文
+/**
+ * 逐行对比改动前后的全文，只列出改了的行，前后各带 context 行原文（像 git diff）。
+ * 返回 [{type:'ctx'|'del'|'add'|'gap', no, text}]：no 是行号（删掉的行用旧行号，其余用新行号），gap 表示中间省略了没改的行。
+ * 先去掉开头结尾相同的部分，中间再做 LCS；中间部分太大时退化成「整段删、整段加」，免得卡住。
+ */
+function lineDiff(oldText, newText, context = 2, maxRows = 400) {
+  const a = oldText ? String(oldText).split('\n') : [];
+  const b = newText ? String(newText).split('\n') : [];
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  let suf = 0;
+  while (suf < a.length - pre && suf < b.length - pre && a[a.length - 1 - suf] === b[b.length - 1 - suf]) suf++;
+  const am = a.slice(pre, a.length - suf);
+  const bm = b.slice(pre, b.length - suf);
+  // ops：按顺序的 [type, 旧行下标, 新行下标]（下标是全文里的）
+  const ops = [];
+  for (let i = 0; i < pre; i++) ops.push(['ctx', i, i]);
+  if (am.length * bm.length <= 4_000_000) {
+    const n = am.length, m = bm.length;
+    const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = am[i] === bm[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    let i = 0, j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && am[i] === bm[j]) ops.push(['ctx', pre + i++, pre + j++]);
+      else if (j < m && (i >= n || L[i][j + 1] > L[i + 1][j])) ops.push(['add', -1, pre + j++]);
+      else ops.push(['del', pre + i++, -1]);
+    }
+  } else {
+    am.forEach((_, k) => ops.push(['del', pre + k, -1]));
+    bm.forEach((_, k) => ops.push(['add', -1, pre + k]));
+  }
+  for (let k = 0; k < suf; k++) ops.push(['ctx', a.length - suf + k, b.length - suf + k]);
+  // 只留改动的行和它们前后 context 行
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((o, k) => {
+    if (o[0] === 'ctx') return;
+    for (let d = Math.max(0, k - context); d <= Math.min(ops.length - 1, k + context); d++) keep[d] = true;
+  });
+  const rows = [];
+  let last = -1;
+  for (let k = 0; k < ops.length && rows.length < maxRows; k++) {
+    if (!keep[k]) continue;
+    if (last >= 0 && k > last + 1) rows.push({ type: 'gap', no: 0, text: '' });
+    const [t, ia, ib] = ops[k];
+    rows.push({ type: t, no: (t === 'del' ? ia : ib) + 1, text: t === 'del' ? a[ia] : b[ib] });
+    last = k;
+  }
+  return rows;
+}
+// 对比结果里加了几行、删了几行
+const diffStats = (rows) => ({ add: rows.filter((r) => r.type === 'add').length, del: rows.filter((r) => r.type === 'del').length });
+
+// 生成 diff 预览，供用户确认；newText 是改完后的全文
 function makeEditPreview(root, p, oldStr, newStr) {
   const abs = safePath(root, p);
   const text = fs.readFileSync(abs, 'utf8');
-  const { newText, startLine, oldShown, newShown, how } = applyEdit(text, oldStr, newStr);
-  const diff = [
-    ...oldShown.split('\n').map((l, i) => ({ type: 'del', no: startLine + i, text: l })),
-    ...newShown.split('\n').map((l, i) => ({ type: 'add', no: startLine + i, text: l })),
-  ];
+  const { newText, startLine, how } = applyEdit(text, oldStr, newStr);
+  const diff = lineDiff(text, newText);
   return { abs, text, newText, diff, startLine, how };
 }
 
@@ -567,4 +616,6 @@ function runCommand(root, command, signal, timeoutSec = 60, extraPath = []) {
   });
 }
 
-module.exports = { setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, applyEdit, makeEditPreview, backup, runCommand };
+module.exports = {
+  lineDiff,
+  diffStats, setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, applyEdit, makeEditPreview, backup, runCommand };

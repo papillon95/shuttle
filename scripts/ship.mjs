@@ -6,6 +6,7 @@
 //       补丁 + 重新打 macOS / Windows 安装包 + 上传 + 更新版本表和下载地址
 //   加 --dry-run：只做检查、列出要做的步骤，不改任何东西
 //   加 --resume：上次 full 在打安装包时失败（补丁已经发出去了），从打安装包那一步接着做
+//   加 --installers-only：补丁已经发过、安装包已经在 dist 里打好，只上传安装包并换下载地址（不提交、不打标签）
 //   加 --prebuilt：dist 里已经有这个版本的三个安装包，不再重新打，直接上传
 //
 // 密钥：COS_SECRET_ID / COS_SECRET_KEY、DB_HOST / DB_USER / DB_PASS 优先读环境变量；
@@ -39,8 +40,10 @@ const opt = (n) => {
 const NOTES = opt('notes') || '';
 const NOTES_EN = opt('notes-en') || NOTES;
 const DRY = flag('dry-run');
-const RESUME = flag('resume');
-const PREBUILT = flag('prebuilt');
+// --installers-only：补丁早就发过了，只把 dist 里打好的安装包上传、写版本表、换下载地址、重新生成发布说明（不提交、不打标签）
+const INSTALLERS_ONLY = flag('installers-only');
+const RESUME = flag('resume') || INSTALLERS_ONLY;
+const PREBUILT = flag('prebuilt') || INSTALLERS_ONLY;
 if (!['patch', 'full'].includes(mode) || !/^\d+\.\d+\.\d+$/.test(VERSION || '') || !NOTES) {
   console.error('用法：node scripts/ship.mjs patch|full <版本号> --notes "更新说明" [--notes-en "..."] [--dry-run]');
   process.exit(1);
@@ -279,6 +282,10 @@ const mdFile = path.join(ROOT, 'dist', `RELEASE-v${VERSION}.md`);
 fs.mkdirSync(path.dirname(mdFile), { recursive: true });
 fs.writeFileSync(mdFile, md);
 console.log(C.g(`  ✓ ${path.relative(MONO, mdFile)}`));
+if (INSTALLERS_ONLY) {
+  console.log('\n' + C.g(C.b(`✓ v${VERSION} 安装包已上传，下载地址已更新`)) + C.d('（--installers-only：没有提交、打标签、同步仓库）'));
+  process.exit(0);
+}
 
 // ---------- 提交、推送 ----------
 say('提交版本号并推送 master');
