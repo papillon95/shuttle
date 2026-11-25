@@ -119,7 +119,7 @@
       <nav class="tabs">
         <div class="tabs-title" data-i18n="settings"></div>
         <button data-tab="account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span data-i18n="tabAccount"></span></button>
-        <button data-tab="team"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14a6.5 6.5 0 0 1 3.5 6"/></svg><span data-i18n="tabTeam"></span></button>
+        <button data-tab="team" class="hidden"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14a6.5 6.5 0 0 1 3.5 6"/></svg><span data-i18n="tabTeam"></span></button>
         <div class="tabs-sep"></div>
         <button data-tab="models" class="active"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 20 3M16 7l3 3M18.5 4.5l2 2"/></svg><span data-i18n="tabModels"></span></button>
         <button data-tab="behavior"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.8 7L4 20l1.1-4.6A8 8 0 1 1 21 12z"/></svg><span data-i18n="tabBehavior"></span></button>
@@ -233,46 +233,9 @@
             <div class="set-row"><span data-i18n="teamMyRole"></span><span id="teamRole" class="team-role"></span></div>
           </div>
 
-          <div id="teamBindBox">
-            <h4 data-i18n="teamBind"></h4>
-            <div class="hint set-hint" data-i18n="teamBindHint"></div>
-            <div class="row set-actions">
-              <input id="teamBindInput" type="password" autocomplete="off" spellcheck="false" placeholder="sht_..." />
-              <button id="teamBindBtn" class="primary" data-i18n="teamBindBtn"></button>
-              <span class="form-msg" id="teamBindMsg"></span>
-            </div>
-          </div>
-
-          <div id="teamManage" class="hidden">
-            <h4 data-i18n="teamNewToken"></h4>
-            <div class="hint set-hint" data-i18n="teamNewTokenHint"></div>
-            <div class="row set-actions team-new">
-              <input id="teamTokName" maxlength="50" data-i18n-ph="teamTokNamePh" />
-              <select id="teamTokRole"><option value="staff" data-i18n="teamRoleStaff"></option><option value="viewer" data-i18n="teamRoleViewer"></option></select>
-              <select id="teamTokDays"><option value="7" data-i18n="teamDays7"></option><option value="90" selected data-i18n="teamDays90"></option><option value="" data-i18n="teamDaysForever"></option></select>
-              <button id="teamTokCreate" class="primary" data-i18n="teamTokCreate"></button>
-            </div>
-            <div id="teamTokNew" class="mcp-token-new hidden">
-              <div class="hint" data-i18n="teamTokOnce"></div>
-              <code id="teamTokValue"></code>
-              <div class="row"><button id="teamTokCopy" class="ghost small" data-i18n="mcpTokenCopy"></button></div>
-            </div>
-            <span class="form-msg" id="teamTokMsg"></span>
-            <div id="teamTokList"></div>
-
-            <h4 data-i18n="teamMembers"></h4>
-            <div id="teamMemberList"></div>
-            <div id="teamAdminBox" class="hidden">
-              <div class="hint set-hint" data-i18n="teamSetAdminHint"></div>
-              <div class="row set-actions">
-                <input id="teamAdminAccount" maxlength="64" data-i18n-ph="teamAdminPh" />
-                <button id="teamAdminBtn" class="ghost" data-i18n="teamSetAdmin"></button>
-                <span class="form-msg" id="teamAdminMsg"></span>
-              </div>
-            </div>
-          </div>
-
-          <div id="teamLogBox" class="hidden">
+          <h4 data-i18n="teamMembers"></h4>
+          <div id="teamMemberList"></div>
+          <div id="teamLogBox">
             <h4 data-i18n="teamLogs"></h4>
             <div id="teamLogList"></div>
           </div>

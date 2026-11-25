@@ -564,13 +564,16 @@ function send(evt) {
   remote.forward(evt);
 }
 
-function askConfirm(payload) {
+// withValues：确认框里有下拉选项（比如客服类型、有效期）时，返回 {ok, values}；手机上确认的没有选项，用默认值
+function askConfirm(payload, withValues = false) {
   const id = Math.random().toString(36).slice(2);
   return new Promise((resolve) => {
     let timer = null;
-    const done = (ok) => {
+    const done = (ok, values) => {
       clearTimeout(timer);
-      resolve(ok);
+      if (!withValues) return resolve(ok);
+      const defaults = Object.fromEntries((payload.choices || []).map((c) => [c.key, c.value]));
+      resolve({ ok, values: { ...defaults, ...(values && typeof values === 'object' ? values : {}) } });
     };
     pendingConfirms.set(id, done);
     const st = runCtx.getStore();
@@ -598,7 +601,7 @@ function askConfirm(payload) {
           pendingConfirms.delete(id);
           confirmConv.delete(id);
           send({ type: 'confirm-timeout', id, convId: cid });
-          resolve(false);
+          resolve(withValues ? { ok: false, values: {} } : false);
         }
       }, 10 * 60 * 1000);
     }
@@ -2057,13 +2060,14 @@ async function mcpLazyTool(name, args, signal) {
     return JSON.stringify(r.tools);
   }
   const server = String(args.server || ''), tool = String(args.tool || '');
-  if (needsConfirm('run_command')) {
+  if (server !== TEAM_MCP && needsConfirm('run_command')) {
     const ok = await askConfirm({ tool: 'mcp', title: T('confirmMcp', { server, tool }), command: JSON.stringify(args.arguments || {}, null, 2) });
     if (!ok) return T('rejectedMcp');
   }
   try {
     const r = await mcp.callByName(server, tool, args.arguments || {}, signal);
-    return r.isError ? T('errorPrefix') + r.text : r.text;
+    if (r.isError) return T('errorPrefix') + r.text;
+    return server === TEAM_MCP ? teamConfirmFlow(r.text) : r.text;
   } catch (e) {
     return T('errorPrefix') + e.message;
   }
@@ -2072,12 +2076,32 @@ async function mcpLazyTool(name, args, signal) {
 async function callMcpTool(name, args, signal) {
   const hit = mcp.lookup(name);
   if (!hit) return T('errorPrefix') + T('mcpToolGone');
-  if (needsConfirm('run_command')) {
+  // 自己的团队工具不走通用的 MCP 审批：查询直接查，改动由下面的确认框确认
+  if (hit.server !== TEAM_MCP && needsConfirm('run_command')) {
     const ok = await askConfirm({ tool: 'mcp', title: T('confirmMcp', { server: hit.server, tool: hit.tool }), command: JSON.stringify(args || {}, null, 2) });
     if (!ok) return T('rejectedMcp');
   }
   const r = await mcp.call(name, args, signal);
-  return r.isError ? T('errorPrefix') + r.text : r.text;
+  if (r.isError) return T('errorPrefix') + r.text;
+  return hit.server === TEAM_MCP ? teamConfirmFlow(r.text) : r.text;
+}
+
+// 团队工具返回预览（开会员、加额度、确认收款、设客服、收回权限）时带着一段确认数据：
+// 在电脑上弹确认框（可以选客服类型、有效期），点确认就直接在服务器上执行，结果交回给模型；模型自己没法确认
+async function teamConfirmFlow(text) {
+  const MARK = '[[shuttle-confirm]]';
+  const i = String(text || '').indexOf(MARK);
+  if (i < 0) return text;
+  let card;
+  try {
+    card = JSON.parse(text.slice(i + MARK.length));
+  } catch {
+    return text.slice(0, i);
+  }
+  const { ok, values } = await askConfirm({ tool: 'team', title: card.title, detail: card.detail, choices: card.choices || null, yes: T('teamConfirmYes') }, true);
+  if (!ok) return T('teamConfirmCancelled', { title: card.title });
+  const r = await api('/aidesk/team/confirm', { method: 'POST', token: token(), body: { code: card.code, values } });
+  return r.ok ? r.data.text : T('errorPrefix') + (r.message && !/^[a-z_]+$/.test(r.message) ? r.message : r.error || 'failed');
 }
 
 const imageRejects = new WeakMap(); // 对话 -> 生图连续被内容审核拒绝的次数
@@ -3439,18 +3463,18 @@ function stopRun(cid) {
   }
 }
 // 确认的应答：电脑上点的（界面）或手机上点的（远程）；另一边的确认框随之关掉
-function answerConfirm(id, ok, by) {
+function answerConfirm(id, ok, by, values) {
   const fn = pendingConfirms.get(id);
   if (!fn) return false;
   const convId = confirmConv.get(id);
-  fn(ok);
+  fn(ok, values);
   confirmConv.delete(id);
   pendingConfirms.delete(id);
   if (by === 'phone') send({ type: 'confirm-answered', id, ok, convId, by });
   else remote.notifyWeb({ type: 'confirm-answered', id, ok, convId, by });
   return true;
 }
-ipcMain.handle('confirm:reply', (_e, id, ok) => answerConfirm(id, ok, 'desktop'));
+ipcMain.handle('confirm:reply', (_e, id, ok, values) => answerConfirm(id, ok, 'desktop', values));
 ipcMain.handle('open:external', (_e, url) => shell.openExternal(url));
 // 用户协议 / 隐私政策：服务器上的网页，用系统浏览器打开（改了内容要同步改版本号）
 const TERMS_VERSION = '2026-11-19';

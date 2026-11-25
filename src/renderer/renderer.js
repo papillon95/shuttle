@@ -1726,15 +1726,29 @@ function showConfirm(evt) {
   confirmingId = evt.id;
   $('confirmTitle').textContent = evt.title;
   const body = $('confirmBody');
-  if (evt.command) {
+  body.classList.toggle('diff', !evt.detail);
+  if (evt.detail) {
+    // 团队操作（开会员、设客服等）：说明 + 可选项（客服类型、有效期）
+    body.innerHTML = `<div class="confirm-detail">${esc(evt.detail)}</div>` + (evt.choices || []).map((c) =>
+      `<label class="confirm-choice"><span>${esc(c.label)}</span><select data-key="${esc(c.key)}">${c.options.map((o) =>
+        `<option value="${esc(String(o.value))}"${String(o.value) === String(c.value) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`).join('');
+  } else if (evt.command) {
     body.innerHTML = `<div class="cmd">${evt.tool === 'run_command' ? '$ ' : ''}${esc(evt.command)}</div>`;
   } else {
     body.innerHTML = diffHtml(evt.diff);
   }
+  $('confirmYes').textContent = evt.yes || T('allow');
+  $('confirmNo').textContent = evt.detail ? T('cancel') : T('reject');
   $('confirmModal').classList.remove('hidden');
   const done = (ok) => {
     $('confirmModal').classList.add('hidden');
-    window.api.confirmReply(evt.id, ok);
+    const values = {};
+    body.querySelectorAll('select[data-key]').forEach((sel) => {
+      const c = (evt.choices || []).find((x) => x.key === sel.dataset.key);
+      const opt = c?.options.find((o) => String(o.value) === sel.value);
+      values[sel.dataset.key] = opt ? opt.value : sel.value;
+    });
+    window.api.confirmReply(evt.id, ok, values);
   };
   $('confirmYes').onclick = () => done(true);
   $('confirmNo').onclick = () => done(false);
@@ -1955,11 +1969,11 @@ async function refreshDataInfo() {
 // 配色：[id, 浅色版的 侧栏 / 对话区 / 强调色]（只用来画选择卡片）
 const PALETTES = [
   ['default', '#121830', '#ffffff', '#4a6bff'],
-  ['forest', '#ecf0ea', '#ffffff', '#2f855a'],
-  ['ocean', '#ebeff4', '#ffffff', '#0e7490'],
-  ['lavender', '#efedf5', '#ffffff', '#7c5cd6'],
-  ['sand', '#f3eee6', '#fffdfa', '#c2410c'],
-  ['rose', '#f5edee', '#ffffff', '#c93c66'],
+  ['forest', '#11261b', '#ffffff', '#2f855a'],
+  ['ocean', '#0e2331', '#ffffff', '#0e7490'],
+  ['lavender', '#1c1634', '#ffffff', '#7c5cd6'],
+  ['sand', '#2a1d13', '#fffdfa', '#c2410c'],
+  ['rose', '#2a1322', '#ffffff', '#c93c66'],
 ];
 // Windows：右上角最小化 / 关闭按钮那一块的底色跟顶栏一致（换配色、深浅色时都要更新）
 function syncTitleBar() {
@@ -2239,6 +2253,7 @@ function parseExtraModels(value, p) {
   return [...new Set(out)];
 }
 function openSettings(tab = 'models') {
+  refreshTeamTab();
   const list = $('keyList');
   list.innerHTML = '';
   let codingHead = false;
@@ -2639,44 +2654,23 @@ const teamErr = (r) => {
   const t = T(k);
   return t !== k ? t : r?.error && /[一-龥]/.test(r.error) ? r.error : errText(r);
 };
-const TEAM_STATUS = { pending: 'teamTokPending', bound: 'teamTokBound', expired: 'teamTokExpired', revoked: 'teamTokRevoked' };
 let teamMe = null;
 async function loadTeam() {
   const r = await window.api.call('GET', '/aidesk/team/me');
   if (!r.ok) return;
   teamMe = r.data;
-  $('teamRole').textContent = T('teamRole_' + (teamMe.role || 'none')) + (teamMe.expiresAt ? ' · ' + T('teamUntil', { t: fmtTime(teamMe.expiresAt) }) : teamMe.role ? ' · ' + T('teamForever') : '');
-  $('teamRole').className = 'team-role' + (teamMe.role ? ' on' : '');
-  $('teamBindBox').classList.toggle('hidden', !!teamMe.canManage);
-  $('teamManage').classList.toggle('hidden', !teamMe.canManage);
-  $('teamAdminBox').classList.toggle('hidden', !teamMe.isOwner);
-  $('teamLogBox').classList.toggle('hidden', !teamMe.role);
+  $('teamRole').textContent = T('teamRole_' + (teamMe.role || 'none'));
   if (teamMe.canManage) {
-    loadTeamTokens();
     loadTeamMembers();
+    loadTeamLogs();
   }
-  if (teamMe.role) loadTeamLogs();
 }
-async function loadTeamTokens() {
-  const r = await window.api.call('GET', '/aidesk/team/tokens');
-  const box = $('teamTokList');
-  box.innerHTML = '';
-  if (!r.ok) return;
-  for (const t of r.data.tokens) {
-    const el = document.createElement('div');
-    el.className = 'device';
-    const st = T(TEAM_STATUS[t.status] || t.status, { u: t.boundUsername || '' });
-    el.innerHTML = `<div><b>${esc(t.name)}</b><span class="tag team-st-${esc(t.status)}">${esc(st)}</span>
-      <div class="hint">${esc(T('teamRole_' + t.role))} · ${esc(t.days ? T('teamDaysN', { n: t.days }) : T('teamDaysForever'))} · ${esc(t.tokenPrefix)}… · ${esc(T('teamTokBy', { u: t.createdBy || '', t: fmtTime(t.createTime) }))}</div></div>
-      ${t.status === 'pending' || t.status === 'bound' ? `<button class="ghost small">${esc(T('teamTokRevoke'))}</button>` : '<span></span>'}`;
-    el.querySelector('button')?.addEventListener('click', async () => {
-      if (!confirm(T(t.status === 'bound' ? 'teamTokRevokeBoundConfirm' : 'teamTokRevokeConfirm', { name: t.name, u: t.boundUsername || '' }))) return;
-      const x = await window.api.call('DELETE', '/aidesk/team/tokens/' + t.id);
-      if (!x.ok) alert(teamErr(x));
-      loadTeam();
-    });
-    box.appendChild(el);
-  }
+// 「团队」菜单只有超级管理员、管理员看得到
+async function refreshTeamTab() {
+  const r = await window.api.call('GET', '/aidesk/team/me').catch(() => null);
+  const show = !!r?.ok && !!r.data.canManage;
+  document.querySelector('.tabs button[data-tab="team"]')?.classList.toggle('hidden', !show);
+  if (!show && !document.querySelector('[data-pane="team"]').classList.contains('hidden')) switchTab('account');
 }
 async function loadTeamMembers() {
   const r = await window.api.call('GET', '/aidesk/team/members');
@@ -2713,46 +2707,6 @@ async function loadTeamLogs() {
     box.appendChild(el);
   }
 }
-$('teamBindBtn').onclick = async () => {
-  const tk = $('teamBindInput').value.trim();
-  if (!/^sht_/.test(tk)) return formMsg('teamBindMsg', false, T('teamErr_bad_token'));
-  const r = await window.api.call('POST', '/aidesk/team/bind', { token: tk });
-  if (!r.ok) return formMsg('teamBindMsg', false, teamErr(r));
-  $('teamBindInput').value = '';
-  await window.api.teamSync();
-  formMsg('teamBindMsg', true, T('teamBound', { role: T('teamRole_' + r.data.role) }));
-  loadTeam();
-};
-let newTeamToken = '';
-$('teamTokCreate').onclick = async () => {
-  const name = $('teamTokName').value.trim();
-  if (!name) return formMsg('teamTokMsg', false, T('teamErr_bad_name'));
-  const days = $('teamTokDays').value;
-  if (!days && !confirm(T('teamForeverConfirm', { name }))) return;
-  const r = await window.api.call('POST', '/aidesk/team/tokens', { name, role: $('teamTokRole').value, days: days || null });
-  if (!r.ok) return formMsg('teamTokMsg', false, teamErr(r));
-  newTeamToken = r.data.token;
-  $('teamTokValue').textContent = newTeamToken;
-  $('teamTokNew').classList.remove('hidden');
-  $('teamTokName').value = '';
-  formMsg('teamTokMsg', true, '');
-  loadTeamTokens();
-};
-$('teamTokCopy').onclick = async () => {
-  await navigator.clipboard.writeText(newTeamToken);
-  formMsg('teamTokMsg', true, T('copied'));
-};
-$('teamAdminBtn').onclick = async () => {
-  const account = $('teamAdminAccount').value.trim();
-  if (!account) return;
-  if (!confirm(T('teamSetAdminConfirm', { u: account }))) return;
-  const r = await window.api.call('POST', '/aidesk/team/admins', { account });
-  if (!r.ok) return formMsg('teamAdminMsg', false, teamErr(r));
-  $('teamAdminAccount').value = '';
-  formMsg('teamAdminMsg', true, T('teamAdminDone', { u: r.data.username }));
-  loadTeamMembers();
-  loadTeamLogs();
-};
 $('revokeOthers').onclick = async () => {
   const r = await window.api.call('POST', '/aidesk/account/sessions/revoke-others');
   if (r.ok) loadDevices();

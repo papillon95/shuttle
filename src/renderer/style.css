@@ -1099,19 +1099,20 @@ body.has-bg .log .msg.user, body.has-bg .log pre, body.has-bg .log code, body.ha
 
 /* ==========================================================================
    默认配色「夜航」：深色侧栏 + 蓝紫渐变强调色（和官网一致）。
-   只作用于默认配色（没选其他配色时）；其他配色还是原来的浅色侧栏。
+   所有配色都用深色侧栏，每套配色有自己的侧栏底色和渐变（见下面「各配色的侧栏」）。
    ========================================================================== */
-:root:not([data-palette]) {
+:root {
   --bg: #f6f7fb; --main: #ffffff; --panel: #ffffff; --side: #f3f4f9;
   --border: #e6e8f0; --hover: #eef0f6; --active: #e4e7f2;
   --accent: #4a6bff; --user-bg: #eef1ff; --tool-bg: #f4f6fb; --table-head: #f5f6fa; --quote-bar: #d3d8ea;
   --code-block-bg: #f8f9fc; --code-head: #f8f9fc;
   --shadow: 0 2px 12px rgba(30, 40, 90, 0.06), 0 0 0 1px rgba(30, 40, 90, 0.05);
   --grad: linear-gradient(135deg, #4a6bff 0%, #7b5cff 100%);
+  --nav-bar: #8c9cff;
   --nav-bg: radial-gradient(120% 55% at 0% 0%, rgba(90, 110, 255, 0.24), transparent 60%), linear-gradient(180deg, #121830 0%, #0c1020 100%);
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-palette]) {
+  :root {
     --bg: #12141c; --main: #12141c; --panel: #1a1d28; --side: #161924;
     --border: #2a2e3c; --hover: #222635; --active: #2a2f41;
     --accent: #6d86ff; --user-bg: #242b48; --tool-bg: #191c27; --table-head: #1d2130; --quote-bar: #3b4157;
@@ -1123,61 +1124,61 @@ body.has-bg .log .msg.user, body.has-bg .log pre, body.has-bg .log code, body.ha
 }
 
 /* ---- 侧栏 ---- */
-:root:not([data-palette]) .sidebar {
+:root .sidebar {
   background: var(--nav-bg); border-right: 0; color: #f5f6fb;
   /* 侧栏里的文字和控件用深底配色（对比度：标题 15:1，时间 7.5:1，小标签 6.7:1） */
   --text: #f5f6fb; --text-soft: rgba(255, 255, 255, 0.9); --muted: rgba(255, 255, 255, 0.62);
   --border: rgba(255, 255, 255, 0.1); --hover: rgba(255, 255, 255, 0.07); --active: rgba(255, 255, 255, 0.11);
   --panel: rgba(255, 255, 255, 0.06);
 }
-:root:not([data-palette]) .new-btn {
+:root .new-btn {
   background: var(--grad); color: #fff; border: 0; height: 42px; border-radius: 12px;
-  font-weight: 650; font-size: 14px; box-shadow: 0 8px 22px rgba(74, 107, 255, 0.35); transition: filter .15s, transform .15s;
+  font-weight: 650; font-size: 14px; box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 35%, transparent); transition: filter .15s, transform .15s;
 }
-:root:not([data-palette]) .new-btn:hover { filter: brightness(1.08); }
-:root:not([data-palette]) .new-btn:active { transform: translateY(1px); }
-:root:not([data-palette]) .sidebar .side-label { color: rgba(255, 255, 255, 0.58); }
-:root:not([data-palette]) .sidebar .conv-search { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.09); color: #fff; border-radius: 10px; }
-:root:not([data-palette]) .sidebar .conv-search::placeholder { color: rgba(255, 255, 255, 0.55); }
-:root:not([data-palette]) .sidebar .conv-search:focus { border-color: rgba(123, 140, 255, 0.7); outline: none; }
-:root:not([data-palette]) .sidebar .conv { border-radius: 10px; color: rgba(255, 255, 255, 0.9); }
-:root:not([data-palette]) .sidebar .conv .t { font-size: 13.5px; }
-:root:not([data-palette]) .sidebar .conv.active { color: #fff; box-shadow: inset 3px 0 0 #7b8cff; }
-:root:not([data-palette]) .sidebar .folder-group { color: rgba(255, 255, 255, 0.82); font-weight: 600; }
-:root:not([data-palette]) .sidebar .quota-chip,
-:root:not([data-palette]) .sidebar .user-chip { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.09); border-radius: 14px; box-shadow: none; }
-:root:not([data-palette]) .sidebar .quota-chip .q-bar { background: rgba(255, 255, 255, 0.12); }
-:root:not([data-palette]) .sidebar .quota-chip:not(.low) .q-bar i { background: var(--grad); }
-:root:not([data-palette]) .sidebar .link-btn { color: #a9b8ff; }
-:root:not([data-palette]) .sidebar .user-chip button { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.12); color: #fff; }
-:root:not([data-palette]) .sidebar .user-chip button:hover { background: rgba(255, 255, 255, 0.14); }
-:root:not([data-palette]) .sidebar .side-bottom { border-color: transparent; color: rgba(255, 255, 255, 0.9); border-radius: 10px; }
-:root:not([data-palette]) .sidebar .side-bottom:hover { background: rgba(255, 255, 255, 0.07); border-color: transparent; }
-:root:not([data-palette]) .sidebar button:not(.new-btn):not(.side-bottom):not(.link-btn) { color: inherit; }
-:root:not([data-palette]) .sidebar ::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.18); }
-:root:not([data-palette]) .sidebar ::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.3); }
+:root .new-btn:hover { filter: brightness(1.08); }
+:root .new-btn:active { transform: translateY(1px); }
+:root .sidebar .side-label { color: rgba(255, 255, 255, 0.58); }
+:root .sidebar .conv-search { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.09); color: #fff; border-radius: 10px; }
+:root .sidebar .conv-search::placeholder { color: rgba(255, 255, 255, 0.55); }
+:root .sidebar .conv-search:focus { border-color: var(--nav-bar); outline: none; }
+:root .sidebar .conv { border-radius: 10px; color: rgba(255, 255, 255, 0.9); }
+:root .sidebar .conv .t { font-size: 13.5px; }
+:root .sidebar .conv.active { color: #fff; box-shadow: inset 3px 0 0 var(--nav-bar); }
+:root .sidebar .folder-group { color: rgba(255, 255, 255, 0.82); font-weight: 600; }
+:root .sidebar .quota-chip,
+:root .sidebar .user-chip { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.09); border-radius: 14px; box-shadow: none; }
+:root .sidebar .quota-chip .q-bar { background: rgba(255, 255, 255, 0.12); }
+:root .sidebar .quota-chip:not(.low) .q-bar i { background: var(--grad); }
+:root .sidebar .link-btn { color: var(--nav-bar); }
+:root .sidebar .user-chip button { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.12); color: #fff; }
+:root .sidebar .user-chip button:hover { background: rgba(255, 255, 255, 0.14); }
+:root .sidebar .side-bottom { border-color: transparent; color: rgba(255, 255, 255, 0.9); border-radius: 10px; }
+:root .sidebar .side-bottom:hover { background: rgba(255, 255, 255, 0.07); border-color: transparent; }
+:root .sidebar button:not(.new-btn):not(.side-bottom):not(.link-btn) { color: inherit; }
+:root .sidebar ::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.18); }
+:root .sidebar ::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.3); }
 
 /* ---- 主区域 ---- */
-:root:not([data-palette]) .topbar { background: var(--main); border-bottom-color: var(--border); }
-:root:not([data-palette]) .topbar button, :root:not([data-palette]) .topbar .pick-btn { border-radius: 10px; }
-:root:not([data-palette]) .composer-box { border-radius: 20px; box-shadow: 0 10px 36px rgba(30, 40, 90, 0.08), 0 1px 2px rgba(30, 40, 90, 0.05); }
-:root:not([data-palette]) .composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); box-shadow: 0 10px 36px rgba(74, 107, 255, 0.12), 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
-:root:not([data-palette]) .send-btn:not(.stop) { background: var(--grad); box-shadow: 0 6px 16px rgba(74, 107, 255, 0.35); }
-:root:not([data-palette]) button.primary:not(.stop) { border-color: transparent; background: var(--grad); }
-:root:not([data-palette]) button.primary:not(.stop):hover { filter: brightness(1.07); }
+:root .topbar { background: var(--main); border-bottom-color: var(--border); }
+:root .topbar button, :root .topbar .pick-btn { border-radius: 10px; }
+:root .composer-box { border-radius: 20px; box-shadow: 0 10px 36px rgba(30, 40, 90, 0.08), 0 1px 2px rgba(30, 40, 90, 0.05); }
+:root .composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); box-shadow: 0 10px 36px color-mix(in srgb, var(--accent) 12%, transparent), 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+:root .send-btn:not(.stop) { background: var(--grad); box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 35%, transparent); }
+:root button.primary:not(.stop) { border-color: transparent; background: var(--grad); }
+:root button.primary:not(.stop):hover { filter: brightness(1.07); }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-palette]) .composer-box { box-shadow: 0 10px 36px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.04); }
+  :root .composer-box { box-shadow: 0 10px 36px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.04); }
 }
 
 /* 侧栏悬停时的三个小按钮：深色侧栏是半透明底，按钮下面的标题和时间会透出来叠在一起。
    改成悬停时隐藏时间、标题提前截断，按钮直接放在行上，不再盖住文字 */
-:root:not([data-palette]) .sidebar .conv-acts,
-:root:not([data-palette]) .sidebar .conv.active .conv-acts { background: none; padding-left: 0; }
-:root:not([data-palette]) .sidebar .conv:hover .c-time { display: none; }
-:root:not([data-palette]) .sidebar .conv:hover .c-row { padding-right: 80px; }
-:root:not([data-palette]) .sidebar .conv-acts button { color: rgba(255, 255, 255, 0.72); }
-:root:not([data-palette]) .sidebar .conv-acts button:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
-:root:not([data-palette]) .sidebar .conv-acts button.del:hover { color: #ff8a8a; }
+:root .sidebar .conv-acts,
+:root .sidebar .conv.active .conv-acts { background: none; padding-left: 0; }
+:root .sidebar .conv:hover .c-time { display: none; }
+:root .sidebar .conv:hover .c-row { padding-right: 80px; }
+:root .sidebar .conv-acts button { color: rgba(255, 255, 255, 0.72); }
+:root .sidebar .conv-acts button:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+:root .sidebar .conv-acts button.del:hover { color: #ff8a8a; }
 
 /* 设置 → 团队 */
 .team-role { font-weight: 600; color: var(--muted); }
@@ -1198,3 +1199,36 @@ body.has-bg .log .msg.user, body.has-bg .log pre, body.has-bg .log code, body.ha
 #teamBindBox .set-actions, #teamAdminBox .set-actions { flex-wrap: wrap; }
 #teamBindBox button, #teamManage button, #teamAdminBox button { white-space: nowrap; flex: none; }
 #teamBindInput, #teamAdminAccount { flex: 1; min-width: 200px; }
+
+/* ---- 各配色的侧栏（深色）和强调渐变：浅色、深色模式共用 ---- */
+:root[data-palette="forest"]   { --nav-bar: #6fd3a0; --grad: linear-gradient(135deg, #2f855a 0%, #3aa37e 100%);
+  --nav-bg: radial-gradient(120% 55% at 0% 0%, rgba(70, 180, 120, 0.22), transparent 60%), linear-gradient(180deg, #11261b 0%, #0a1610 100%); }
+:root[data-palette="ocean"]    { --nav-bar: #6cc7e0; --grad: linear-gradient(135deg, #0e7490 0%, #2b8fc9 100%);
+  --nav-bg: radial-gradient(120% 55% at 0% 0%, rgba(40, 170, 210, 0.22), transparent 60%), linear-gradient(180deg, #0e2331 0%, #08151f 100%); }
+:root[data-palette="lavender"] { --nav-bar: #b9a3ff; --grad: linear-gradient(135deg, #7c5cd6 0%, #a56cf0 100%);
+  --nav-bg: radial-gradient(120% 55% at 0% 0%, rgba(150, 110, 255, 0.26), transparent 60%), linear-gradient(180deg, #1c1634 0%, #100c21 100%); }
+:root[data-palette="sand"]     { --nav-bar: #f2a66d; --grad: linear-gradient(135deg, #c2410c 0%, #e07a30 100%);
+  --nav-bg: radial-gradient(120% 55% at 0% 0%, rgba(230, 130, 60, 0.22), transparent 60%), linear-gradient(180deg, #2a1d13 0%, #1a120b 100%); }
+:root[data-palette="rose"]     { --nav-bar: #f292b3; --grad: linear-gradient(135deg, #c93c66 0%, #e0628c 100%);
+  --nav-bg: radial-gradient(120% 55% at 0% 0%, rgba(220, 80, 120, 0.22), transparent 60%), linear-gradient(180deg, #2a1322 0%, #190b14 100%); }
+
+/* ---- 外观设置里的主题预览：和现在的样子一致（深色侧栏 + 当前配色的强调色） ---- */
+.tp::before { width: 27%; background: var(--nav-bg); }
+.tp-dark::before { background: var(--nav-bg); }
+.tp-light { background: #ffffff; }
+.tp-dark { background: #14161f; }
+.tp-system { background: linear-gradient(90deg, #ffffff 55%, #14161f 55%); }
+.tp i { background: var(--grad); }
+
+/* ---- 滚动条：Mac 也用细的半透明滚动条（系统设置成「始终显示滚动条」时不再是灰色粗条） ---- */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 34%, transparent); border-radius: 10px; border: 2px solid transparent; background-clip: content-box; min-height: 40px; }
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--muted) 60%, transparent); }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+
+/* 团队操作的确认框：说明 + 下拉选项 */
+.confirm-detail { white-space: pre-wrap; font-size: 13.5px; line-height: 1.7; color: var(--text-soft); background: var(--tool-bg); border-radius: 10px; padding: 12px 14px; margin: 4px 0 12px; }
+.confirm-choice { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 2px; font-size: 13.5px; }
+.confirm-choice span { font-weight: 600; }
+.confirm-choice select { min-width: 220px; }

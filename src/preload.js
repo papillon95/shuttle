@@ -80,7 +80,7 @@ contextBridge.exposeInMainWorld('api', {
   skillsRemove: (name) => ipcRenderer.invoke('skills:remove', name),
   skillsOpen: (name) => ipcRenderer.invoke('skills:open', name),
   stop: (convId) => ipcRenderer.invoke('chat:stop', convId),
-  confirmReply: (id, ok) => ipcRenderer.invoke('confirm:reply', id, ok),
+  confirmReply: (id, ok, values) => ipcRenderer.invoke('confirm:reply', id, ok, values),
   openExternal: (url) => ipcRenderer.invoke('open:external', url),
   openTerms: (doc) => ipcRenderer.invoke('open:terms', doc),
   openBackups: () => ipcRenderer.invoke('open:backups'),
