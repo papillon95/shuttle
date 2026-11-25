@@ -2165,7 +2165,8 @@ function useUiFont(url) {
   const st = document.createElement('style');
   st.id = 'uiFontFace';
   st.textContent = `@font-face { font-family: "Shuttle Sans"; src: url("${url}") format("woff2"); font-weight: 100 900; font-display: swap; }
-:root.os-win, :root.os-linux { --font: "Segoe UI Variable Text", "Segoe UI", "Shuttle Sans", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }`;
+:root.os-win, :root.os-linux { --font: "Shuttle Sans", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+:root.os-win body, :root.os-linux body { font-weight: 450; }`;
   document.head.appendChild(st);
 }
 if (!document.documentElement.classList.contains('os-mac')) window.api.uiFont().then(useUiFont).catch(() => {});

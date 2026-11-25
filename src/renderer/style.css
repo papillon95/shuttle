@@ -1232,3 +1232,6 @@ body.has-bg .log .msg.user, body.has-bg .log pre, body.has-bg .log code, body.ha
 .confirm-choice { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 2px; font-size: 13.5px; }
 .confirm-choice span { font-weight: 600; }
 .confirm-choice select { min-width: 220px; }
+
+/* 不显示竖向滚动条（鼠标滚轮、触控板照常能滚）；横向的（代码块、宽表格）保留一条细的，不然用鼠标横着滚不方便 */
+::-webkit-scrollbar, .os-win ::-webkit-scrollbar, .os-linux ::-webkit-scrollbar { width: 0 !important; height: 8px; }

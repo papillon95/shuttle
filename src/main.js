@@ -4686,7 +4686,8 @@ app.whenReady().then(() => {
   win.webContents.once('did-finish-load', () => {
     updater.markBootOk(); // 补丁能正常打开窗口，清零启动失败计数
     scheduleUpdateChecks();
-    setTimeout(() => ensureUiFont().catch((e) => console.warn('[font]', e.message)), 3000);
+    // 老版本装的没有自带字体：一启动就在后台下载（只下一次）
+    ensureUiFont().catch((e) => console.warn('[font]', e.message));
   });
 });
 
@@ -4699,9 +4700,17 @@ const UI_FONT = {
   file: () => path.join(app.getPath('userData'), 'fonts', 'NotoSansSC-VF.woff2'),
 };
 let uiFontOk = null; // 校验过的字体文件地址（file://）
+// 安装包里自带的字体（在 app.asar/fonts 里，不在 src 里，补丁不带它）；开发时在项目的 fonts/ 里
+function bundledUiFont() {
+  const name = path.basename(UI_FONT.file());
+  const cands = [path.join(process.resourcesPath || '', 'app.asar', 'fonts', name), path.join(__dirname, '..', 'fonts', name)];
+  return cands.find((f) => { try { return fs.statSync(f).size > 1e6; } catch { return false; } }) || null;
+}
 function uiFontUrl() {
   if (process.platform === 'darwin') return null; // Mac 自带的苹方已经很好看
   if (uiFontOk) return uiFontOk;
+  const bundled = bundledUiFont();
+  if (bundled) return (uiFontOk = require('url').pathToFileURL(bundled).href);
   try {
     const buf = fs.readFileSync(UI_FONT.file());
     if (require('crypto').createHash('sha256').update(buf).digest('hex') === UI_FONT.sha256) uiFontOk = require('url').pathToFileURL(UI_FONT.file()).href;
