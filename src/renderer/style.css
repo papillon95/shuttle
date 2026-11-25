@@ -1168,3 +1168,13 @@ body.has-bg .log .msg.user, body.has-bg .log pre, body.has-bg .log code, body.ha
 @media (prefers-color-scheme: dark) {
   :root:not([data-palette]) .composer-box { box-shadow: 0 10px 36px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.04); }
 }
+
+/* 侧栏悬停时的三个小按钮：深色侧栏是半透明底，按钮下面的标题和时间会透出来叠在一起。
+   改成悬停时隐藏时间、标题提前截断，按钮直接放在行上，不再盖住文字 */
+:root:not([data-palette]) .sidebar .conv-acts,
+:root:not([data-palette]) .sidebar .conv.active .conv-acts { background: none; padding-left: 0; }
+:root:not([data-palette]) .sidebar .conv:hover .c-time { display: none; }
+:root:not([data-palette]) .sidebar .conv:hover .c-row { padding-right: 80px; }
+:root:not([data-palette]) .sidebar .conv-acts button { color: rgba(255, 255, 255, 0.72); }
+:root:not([data-palette]) .sidebar .conv-acts button:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+:root:not([data-palette]) .sidebar .conv-acts button.del:hover { color: #ff8a8a; }
