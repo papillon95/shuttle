@@ -442,6 +442,7 @@ function toolSummary(name, a) {
   if (/^browser_/.test(name || '')) return '';
   if (name === 'explore') return a.task || '';
   if (name === 'memory') return a.text || a.id || '';
+  if (name === 'browser_capture') return (a.format === 'pdf' ? 'PDF' : T('fullPage')) + (a.filename ? '  ' + a.filename : '');
   if (name === 'run_command') return (a.background ? '⏵ ' : '') + (a.command || '');
   if (name === 'command_output') return (a.id || '') + (a.wait ? `  ≤${a.wait}s` : '');
   if (name === 'command_stop') return a.id || '';
@@ -878,6 +879,10 @@ function renderMessages(messages, compact, toolDiffs) {
       if (voiced && settings.workspace) showToolAudio(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + voiced[1]);
       const saved = call.name === 'generate_image' && /(?:已保存图片|Saved image) (.+?)(?:（| \()/.exec(m.content || '');
       if (saved && settings.workspace) showToolImage(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + saved[1]);
+      if (call.name === 'browser_capture') {
+        const shots = [...String(m.content || '').matchAll(/^(?:已保存截图|Saved screenshot) (.+\.png)$/gm)].map((x) => x[1]);
+        for (const f of shots) shots.length > 1 ? showToolImageGrid(m.tool_call_id, f) : showToolImage(m.tool_call_id, f);
+      }
       if (call.name === 'generate_images' && settings.workspace) {
         for (const mm of String(m.content || '').matchAll(/^(?:已保存|Saved) (.+\.(?:png|jpe?g|webp))$/gim)) showToolImageGrid(m.tool_call_id, settings.workspace.replace(/[\\/]+$/, '') + '/' + mm[1]);
       }
@@ -1539,6 +1544,49 @@ function addPlanGo() {
   scrollToEnd();
 }
 
+// ---------- 运行中问进度：短句、像在问进度就本地回答 ----------
+const PROGRESS_RE = /(到哪|进度(怎|如何|呢|多少|$)|什么进度|^进度|做到(哪|第)|执行到|跑到|进行到|第几步|哪一步|完成了?[吗没么]|好了?[吗没么]|结束了?[吗没么]|做完了?[吗没么]|弄完|搞定了?[吗没么]|还要多久|要多久|还有多久|怎么样了|在干[嘛啥什]|在做什么|卡住|^status|^progress|doneyet|how'?s?(is)?itgoing|stillrunning|isitdone|areyoudone)/i;
+function isProgressAsk(t) {
+  const x = String(t || '').replace(/[\s，。？！?!,.~～…]/g, '');
+  return x.length > 0 && x.length <= 20 && PROGRESS_RE.test(x);
+}
+function fmtDur(ms) {
+  const sec = Math.max(1, Math.round(ms / 1000));
+  if (sec < 60) return T('durSec', { s: sec });
+  const m = Math.floor(sec / 60);
+  return m < 60 ? T('durMin', { m, s: sec % 60 }) : T('durHour', { h: Math.floor(m / 60), m: m % 60 });
+}
+async function showProgress(question) {
+  const ask = document.createElement('div');
+  ask.className = 'msg ask-local';
+  ask.textContent = question;
+  append(ask);
+  const p = await window.api.progress(currentConvId);
+  const lines = [];
+  if (!p?.running) lines.push(T('progDone'));
+  else {
+    lines.push(T('progRunning', { t: fmtDur(p.elapsed) }));
+    const items = p.plan || [];
+    if (items.length) {
+      const done = items.filter((x) => x.status === 'completed').length;
+      const cur = items.findIndex((x) => x.status === 'in_progress');
+      lines.push(cur >= 0 ? T('progPlanAt', { done, total: items.length, k: cur + 1, step: items[cur].content }) : T('progPlan', { done, total: items.length }));
+    }
+    if (p.confirming) lines.push(T('progConfirm'));
+    else if (p.tool) {
+      const sum = String(toolSummary(p.tool.name, p.tool.args || {}) || '').slice(0, 80);
+      lines.push(T('progTool', { tool: toolLabel(p.tool.name), arg: sum ? '：' + sum : '', t: fmtDur(p.tool.ms) }));
+    } else lines.push(T(p.writing ? 'progWriting' : 'progThinking'));
+    if (p.calls) lines.push(T('progCalls', { n: p.calls, tokens: Number(p.tokens || 0).toLocaleString() }));
+    for (const b of p.bg || []) lines.push(T('progBg', { id: b.id, cmd: b.command.slice(0, 60), t: fmtDur(b.ms) }));
+    lines.push(T('progHint'));
+  }
+  const note = document.createElement('div');
+  note.className = 'progress-note';
+  note.innerHTML = lines.map((l, i) => `<div${i === lines.length - 1 && p?.running ? ' class="pn-hint"' : ''}>${esc(l)}</div>`).join('');
+  append(note);
+}
+
 async function submit() {
   document.querySelectorAll('.plan-go').forEach((x) => x.remove());
   document.getElementById('undoBar')?.remove();
@@ -1547,6 +1595,14 @@ async function submit() {
     if (!t) {
       window.api.stop(currentConvId);
       return;
+    }
+    // 问「到哪了 / 好了吗」：直接按运行状态回答，不交给模型、不打断
+    if (!pendingImages.length && !pendingFiles.length && isProgressAsk(t)) {
+      $('input').value = '';
+      autosizeInput();
+      updateSendBtn();
+      stickBottom = true;
+      return showProgress(t);
     }
     // 运行中输入了文字：插话，不打断
     if (pendingImages.length || pendingFiles.length) return showToast(T('steerNoFiles'), 'info');
@@ -2641,6 +2697,7 @@ function openSettings(tab = 'models') {
   $('approvalSel2').value = settings.approval;
   $('blockedCommands').value = (settings.blockedCommands || []).join('\n');
   $('allowedCommands').value = (settings.allowedCommands || []).join('\n');
+  $('chatTools').checked = settings.chatTools !== false;
   $('commandTimeout').value = settings.commandTimeout;
   $('ignoreDirs').value = (settings.ignoreDirs || []).join(', ');
   $('language').value = lang();
@@ -2698,6 +2755,7 @@ $('settingsSave').onclick = async () => {
     errorReports: $('errorReports').checked,
     approval: $('approvalSel2').value,
     blockedCommands: $('blockedCommands').value.split('\n').map((l) => l.trim()).filter(Boolean),
+    chatTools: $('chatTools').checked,
     allowedCommands: $('allowedCommands').value.split('\n').map((l) => l.trim().replace(/\s+/g, ' ')).filter(Boolean),
     commandTimeout: clampNum($('commandTimeout').value, 5, 3600, 60),
     ignoreDirs: $('ignoreDirs').value.split(/[,，]+/).map((x) => x.trim()).filter(Boolean),

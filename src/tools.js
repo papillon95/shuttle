@@ -778,12 +778,16 @@ function bgStop(id) {
   bgKill(job);
   return T('bgCmdStopped', { id: job.id });
 }
+/** 还在运行的后台命令（给「到哪了」用） */
+function bgList() {
+  return [...bgJobs.values()].filter((j) => !j.done).map((j) => ({ id: j.id, command: j.command, ms: Date.now() - j.startedAt }));
+}
 /** 退出应用时：停掉所有后台命令 */
 function bgKillAll() {
   for (const j of bgJobs.values()) bgKill(j);
 }
 
 module.exports = {
-  startBackground, bgOutput, bgStop, bgKillAll,
+  startBackground, bgOutput, bgStop, bgKillAll, bgList,
   lineDiff,
   diffStats, setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, applyEdit, applyEdits, replaceAll, makeEditPreview, backup, runCommand };

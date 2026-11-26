@@ -493,4 +493,59 @@ async function screenshot() {
   return 'data:image/jpeg;base64,' + scaled.toJPEG(70).toString('base64');
 }
 
-module.exports = { SEARCH_SITES, normalizeUrl, refresh, rekey, drop, hasPage, currentFile, init, show, hide, isOpen, setBounds, setSuspended, navigate, back, forward, reload, snapshot, elementInfo, click, type, press, scroll, screenshot, state };
+/**
+ * 整页截图（PNG，超长自动分成几张）或存成 PDF。
+ * 先逐屏滚到底，让懒加载的图片（公众号文章等）都加载出来，再回到顶部。
+ */
+async function capture({ pdf = false } = {}) {
+  const s = S();
+  ensureView(s);
+  if (!hasPage(s)) throw Object.assign(new Error('no_page'), { code: 'no_page' });
+  const wc = s.view.webContents;
+  await js(s, `(async () => {
+    const sleep = (t) => new Promise((r) => setTimeout(r, t));
+    const fix = () => document.querySelectorAll('img[data-src]').forEach((i) => { if (!i.getAttribute('src') || i.src.startsWith('data:')) i.src = i.dataset.src; });
+    fix();
+    let y = 0;
+    for (let i = 0; i < 120 && y < document.documentElement.scrollHeight; i++) {
+      y += Math.max(300, innerHeight * 0.85);
+      scrollTo(0, y);
+      await sleep(220);
+    }
+    fix();
+    await sleep(800);
+    scrollTo(0, 0);
+    await sleep(300);
+    return document.documentElement.scrollHeight;
+  })()`, 60000);
+  if (pdf) return { pdf: await wc.printToPDF({ printBackground: true }) };
+  const dbg = wc.debugger;
+  let attached = false;
+  if (!dbg.isAttached()) {
+    dbg.attach('1.3');
+    attached = true;
+  }
+  try {
+    const m = await dbg.sendCommand('Page.getLayoutMetrics');
+    const size = m.cssContentSize || m.contentSize;
+    const width = Math.ceil(size.width);
+    const height = Math.ceil(size.height);
+    // 窄页面（手机版文章）放大 2 倍更清楚；每段不超过约 16000 像素高，最多 12 段
+    const scale = width <= 1000 ? 2 : 1;
+    const seg = Math.floor(16000 / scale);
+    const images = [];
+    for (let y = 0; y < height && images.length < 12; y += seg) {
+      const r = await dbg.sendCommand('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y, width, height: Math.min(seg, height - y), scale } });
+      images.push(Buffer.from(r.data, 'base64'));
+    }
+    return { images, width, height, truncated: height > seg * 12 };
+  } finally {
+    if (attached) {
+      try {
+        dbg.detach();
+      } catch {}
+    }
+  }
+}
+
+module.exports = { capture, SEARCH_SITES, normalizeUrl, refresh, rekey, drop, hasPage, currentFile, init, show, hide, isOpen, setBounds, setSuspended, navigate, back, forward, reload, snapshot, elementInfo, click, type, press, scroll, screenshot, state };

@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('api', {
   skillsRemove: (name) => ipcRenderer.invoke('skills:remove', name),
   skillsOpen: (name) => ipcRenderer.invoke('skills:open', name),
   stop: (convId) => ipcRenderer.invoke('chat:stop', convId),
+  progress: (convId) => ipcRenderer.invoke('chat:progress', convId),
   steer: (convId, text) => ipcRenderer.invoke('chat:steer', convId, text),
   rewind: (convId, ordinal, restoreFiles) => ipcRenderer.invoke('chat:rewind', convId, ordinal, !!restoreFiles),
   memoryList: () => ipcRenderer.invoke('memory:list'),
