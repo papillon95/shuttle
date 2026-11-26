@@ -86,7 +86,13 @@ function clearLog() {
       <p>${esc(T(w ? 'emptyBody' : 'emptyBodyChat'))}</p>
       <div class="sugs">${sugs.map((t) => `<button class="sug" type="button">${esc(t)}</button>`).join('')}</div>
       <div class="empty-ws">${w ? `📁 ${esc(T(isDefault ? 'emptyWsDefault' : 'emptyWs', { name: baseName(w) }))} · <a id="emptyWsChange">${esc(T('changeWs'))}</a>` : `💬 ${esc(T('emptyNoFolder'))} · <a id="emptyWsChange">${esc(T('chooseFolderForFiles'))}</a>`}</div>
+      ${w && !isDefault ? `<div class="empty-notes"><a id="genNotes">${esc(T('genNotesLink'))}</a><span class="hint">${esc(T('genNotesHint'))}</span></div>` : ''}
     </div>`;
+  $('genNotes')?.addEventListener('click', () => {
+    $('input').value = T('genNotesPrompt');
+    autosizeInput();
+    submit();
+  });
   $('log').querySelectorAll('.sug').forEach((b) => (b.onclick = () => {
     $('input').value = b.textContent;
     autosizeInput();
@@ -310,6 +316,7 @@ function toolSummary(name, a) {
   if (name === 'browser_press') return a.key || '';
   if (name === 'browser_scroll') return a.direction === 'up' ? '↑' : '↓';
   if (/^browser_/.test(name || '')) return '';
+  if (name === 'explore') return a.task || '';
   if (name === 'search') return a.pattern;
   if (name === 'run_command') return a.command;
   if (name === 'generate_image') return a.prompt;
@@ -328,6 +335,31 @@ function diffHtml(rows) {
         : `<div class="line ${l.type}"><span class="no">${l.no}</span><span class="sign">${l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' '}</span><span>${esc(l.text)}</span></div>`
     )
     .join('');
+}
+// ---------- 撤销这次修改：任务结束后，AI 改过文件就显示一条，点一下全部恢复成改之前的样子 ----------
+function renderUndoBar(cp) {
+  document.getElementById('undoBar')?.remove();
+  if (!cp?.files?.length) return;
+  const bar = document.createElement('div');
+  bar.id = 'undoBar';
+  bar.className = 'undo-bar';
+  const names = cp.files.slice(0, 6).join('、') + (cp.files.length > 6 ? T('andMore', { n: cp.files.length }) : '');
+  bar.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
+    <span class="ub-text" title="${esc(cp.files.join('\n'))}">${esc(T('undoBarText', { n: cp.files.length }))}<small>${esc(names)}</small></span>
+    <button type="button" class="ghost small">${esc(T('undoBtn'))}</button>`;
+  bar.querySelector('button').onclick = async () => {
+    const convId = currentConvId;
+    let r = await window.api.undoCheckpoint(convId, false);
+    if (!r.ok && r.error === 'changed') {
+      if (!confirm(T('undoChangedConfirm', { files: r.changed.join('\n') }))) return;
+      r = await window.api.undoCheckpoint(convId, true);
+    }
+    if (!r.ok) return showToast(T(r.error === 'running' ? 'undoRunning' : 'undoNone'), 'info');
+    bar.remove();
+    addMsg('note undo-note', esc(T('undoNote', { files: r.files.join('、') })));
+    showToast(T('undoDone', { n: r.files.length }), 'ok');
+  };
+  append(bar);
 }
 // ---------- 任务清单（AI 调用 update_plan 时显示，同一轮对话里只有一张，原地更新） ----------
 let planEl = null;
@@ -692,6 +724,7 @@ function renderMessages(messages, compact, toolDiffs) {
     if (compact?.upto === i) addCompactDivider();
     if (m.role === 'user' && m.expertAsk) addMsg('expert-ask', esc(T('expertAskMsg', { name: expertName(m.expertAsk) })));
     else if (m.role === 'user') addUserMsg(m.attachments ? userHtml(m.userText ?? '', m.attachments) + imgOnly(m.content) : userHtml(m.content), userPayload(m));
+    else if (m.role === 'assistant' && m.undoNote) addMsg('note undo-note', esc(m.content));
     else if (m.role === 'assistant') {
       if (m.content) addReplyActs(addMsg('assistant' + (m.expert ? ' from-expert' : ''), (m.expert ? expertTag(expertName(m.expert) + (m.expertModel ? `（${m.expertModel}）` : '')) : '') + md(m.content)), typeof m.content === 'string' ? m.content : '');
       for (const c of m.tool_calls || []) {
@@ -1006,6 +1039,7 @@ async function openConv(id) {
   settings.workspace = c.workspace || '';
   renderWorkspace();
   renderMessages(c.messages, c.compact, c.toolDiffs);
+  if (c.lastCheckpoint && !c.running) renderUndoBar(c.lastCheckpoint);
   window.api.convContext().then((ctx) => currentConvId === c.id && renderCtx(ctx));
   streamEl = null;
   thinkingEl = null;
@@ -1332,6 +1366,7 @@ function showLongBanner(promptTokens) {
 }
 
 async function submit() {
+  document.getElementById('undoBar')?.remove();
   if (running) {
     window.api.stop(currentConvId);
     return;
@@ -1606,6 +1641,19 @@ window.api.onEvent((evt) => {
       const n = document.createElement('div');
       n.className = 'notice-line';
       n.textContent = evt.text;
+      // 步数用完：给一个「继续」按钮，点了接着做
+      if (evt.maxSteps) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'primary small continue-btn';
+        b.textContent = T('continueBtn');
+        b.onclick = () => {
+          b.remove();
+          $('input').value = T('continueMsg');
+          submit();
+        };
+        n.appendChild(b);
+      }
       append(n);
       break;
     }
@@ -1778,6 +1826,7 @@ window.api.onEvent((evt) => {
       break;
     case 'done':
       planEl?.classList.add('idle');
+      if (evt.checkpoint) setTimeout(() => renderUndoBar(evt.checkpoint), 0);
       if (streamEl) {
         renderStream(true);
         addReplyActs(streamEl, streamText);

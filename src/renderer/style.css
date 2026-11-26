@@ -1333,3 +1333,14 @@ body.busy .plan-card:not(.idle) li.in_progress i { animation: plan-spin .8s line
 .redeem-row input { flex: 1; min-width: 200px; font-family: var(--mono, ui-monospace, Menlo, monospace); letter-spacing: .5px; text-transform: uppercase; }
 .redeem-row .hint.ok { color: var(--ok, #1d7a3e); }
 .redeem-row .hint.bad { color: var(--danger, #d0453a); }
+
+/* 撤销这次修改 */
+.undo-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); font-size: 13px; color: var(--muted); }
+.undo-bar svg { flex: none; color: var(--accent); }
+.undo-bar .ub-text { flex: 1; min-width: 0; color: var(--text); }
+.undo-bar .ub-text small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msg.note.undo-note { color: var(--muted); font-size: 12.5px; }
+.notice-line .continue-btn { margin-left: 10px; padding: 3px 14px; font-size: 12.5px; vertical-align: middle; }
+.empty-notes { margin-top: 14px; font-size: 13px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.empty-notes a { color: var(--accent); cursor: pointer; }
+.empty-notes .hint { font-size: 12px; }

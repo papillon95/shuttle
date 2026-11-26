@@ -109,4 +109,5 @@ contextBridge.exposeInMainWorld('api', {
   onEvent: (cb) => ipcRenderer.on('agent:event', (_e, evt) => cb(evt)),
   reportError: (p) => ipcRenderer.send('errlog:report', p),
   replyFeedback: (p) => ipcRenderer.invoke('feedback:reply', p),
+  undoCheckpoint: (convId, force) => ipcRenderer.invoke('checkpoint:undo', convId, force),
 });

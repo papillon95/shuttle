@@ -91,15 +91,25 @@ const definitions = [
     function: {
       name: 'edit_file',
       description:
-        '修改已有文件：把 old_string 替换为 new_string。old_string 要在文件中唯一出现（带够上下文），照 read_file 看到的原文抄写（不要带行号）。修改前务必先 read_file。',
+        '修改已有文件：把 old_string 替换为 new_string。old_string 要在文件中唯一出现（带够上下文），照 read_file 看到的原文抄写（不要带行号）。修改前务必先 read_file。同一个文件要改好几处时，用 edits 一次传完（按顺序依次替换，比分多次调用省时省钱）；replace_all=true 把所有出现的地方都换掉（比如改变量名）。',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string' },
           old_string: { type: 'string' },
           new_string: { type: 'string' },
+          replace_all: { type: 'boolean', description: '替换所有出现的地方（old_string 不必唯一）' },
+          edits: {
+            type: 'array',
+            description: '同一个文件里的多处修改，按顺序执行；用了 edits 就不用填 old_string / new_string',
+            items: {
+              type: 'object',
+              properties: { old_string: { type: 'string' }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } },
+              required: ['old_string', 'new_string'],
+            },
+          },
         },
-        required: ['path', 'old_string', 'new_string'],
+        required: ['path'],
       },
     },
   },
@@ -592,11 +602,45 @@ function lineDiff(oldText, newText, context = 2, maxRows = 400) {
 // 对比结果里加了几行、删了几行
 const diffStats = (rows) => ({ add: rows.filter((r) => r.type === 'add').length, del: rows.filter((r) => r.type === 'del').length });
 
-// 生成 diff 预览，供用户确认；newText 是改完后的全文
-function makeEditPreview(root, p, oldStr, newStr) {
+/** 全部替换：old 出现几处换几处（只按原文精确匹配） */
+function replaceAll(text, oldStr, newStr) {
+  if (!oldStr) throw new Error(T('editEmptyOld'));
+  const crlf = text.includes('\r\n') && !/(^|[^\r])\n/.test(text);
+  const t = crlf ? text.replace(/\r\n/g, '\n') : text;
+  const o = oldStr.replace(/\r\n/g, '\n');
+  const n = countOf(t, o);
+  if (!n) throw new Error(T('notFound'));
+  const out = t.split(o).join(newStr.replace(/\r\n/g, '\n'));
+  return { newText: crlf ? out.replace(/\n/g, '\r\n') : out, startLine: t.slice(0, t.indexOf(o)).split('\n').length, how: '', count: n };
+}
+/** 一次多处修改：按顺序在上一处改完的结果上继续改；任何一处找不到 / 不唯一就整体失败（文件不动），错误里写明是第几处 */
+function applyEdits(text, edits) {
+  if (!Array.isArray(edits) || !edits.length) throw new Error(T('editEmptyOld'));
+  if (edits.length > 50) throw new Error(T('tooManyEdits'));
+  let cur = text;
+  let first = null;
+  let how = '';
+  edits.forEach((e, i) => {
+    try {
+      const r = e.replace_all ? replaceAll(cur, e.old_string, e.new_string ?? '') : applyEdit(cur, e.old_string, e.new_string ?? '');
+      cur = r.newText;
+      if (first == null) first = r.startLine;
+      if (r.how === 'loose') how = 'loose';
+    } catch (err) {
+      throw new Error(T('editNth', { n: i + 1, total: edits.length }) + err.message);
+    }
+  });
+  return { newText: cur, startLine: first || 1, how };
+}
+// 生成 diff 预览，供用户确认；newText 是改完后的全文。args：{old_string, new_string, replace_all, edits}
+function makeEditPreview(root, p, args) {
   const abs = safePath(root, p);
   const text = fs.readFileSync(abs, 'utf8');
-  const { newText, startLine, how } = applyEdit(text, oldStr, newStr);
+  const { newText, startLine, how } = Array.isArray(args.edits) && args.edits.length
+    ? applyEdits(text, args.edits)
+    : args.replace_all
+      ? replaceAll(text, args.old_string, args.new_string ?? '')
+      : applyEdit(text, args.old_string, args.new_string ?? '');
   const diff = lineDiff(text, newText);
   return { abs, text, newText, diff, startLine, how };
 }
@@ -632,4 +676,4 @@ function runCommand(root, command, signal, timeoutSec = 60, extraPath = []) {
 
 module.exports = {
   lineDiff,
-  diffStats, setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, applyEdit, makeEditPreview, backup, runCommand };
+  diffStats, setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, applyEdit, applyEdits, replaceAll, makeEditPreview, backup, runCommand };
