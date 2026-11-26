@@ -7,6 +7,7 @@ try { const p = localStorage.getItem('shuttle.palette'); if (p && p !== 'default
 document.documentElement.classList.add(FAKE_OS === 'win' ? 'os-win' : /Mac/.test(navigator.platform) ? 'os-mac' : /Win/.test(navigator.platform) ? 'os-win' : 'os-linux');
 let settings;
 let running = false;
+let currentCpOrdinals = []; // 当前对话里哪些用户消息之后 AI 改过文件（倒回时可一起恢复）
 let thinkingEl = null;
 let toolEls = {};
 let currentConvId = null;
@@ -75,6 +76,7 @@ document.addEventListener('click', (e) => {
 
 // ---------- 聊天区 ----------
 function clearLog() {
+  currentCpOrdinals = [];
   setSuggestion('');
   hideLongBanner();
   const w = settings?.workspace || '';
@@ -121,6 +123,7 @@ function addMsg(cls, html) {
 const USER_ACT_ICONS = {
   copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   resend: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
 };
 /** payload：{ text, images: [dataURL], files: [{name, path, size}] } */
 function addUserMsg(html, payload) {
@@ -128,8 +131,10 @@ function addUserMsg(html, payload) {
   const el = addMsg('user', html);
   const acts = document.createElement('div');
   acts.className = 'user-acts';
-  acts.innerHTML = `<button type="button" class="ua-copy" title="${esc(T('copy'))}">${USER_ACT_ICONS.copy}</button><button type="button" class="ua-resend" title="${esc(T('resend'))}">${USER_ACT_ICONS.resend}</button>`;
+  el._payload = payload;
+  acts.innerHTML = `<button type="button" class="ua-copy" title="${esc(T('copy'))}">${USER_ACT_ICONS.copy}</button><button type="button" class="ua-edit" title="${esc(T('editMsg'))}">${USER_ACT_ICONS.edit}</button><button type="button" class="ua-resend" title="${esc(T('resend'))}">${USER_ACT_ICONS.resend}</button>`;
   acts.querySelector('.ua-copy').onclick = () => navigator.clipboard.writeText(payload.text || '').then(() => showToast(T('copied'), 'info'));
+  acts.querySelector('.ua-edit').onclick = () => startEditUser(el);
   acts.querySelector('.ua-resend').onclick = () => resendUser(payload);
   // 最新一条的按钮一直显示（模型没回时最需要它），之前的悬停才显示
   document.querySelectorAll('.user-acts.latest').forEach((x) => x.classList.remove('latest'));
@@ -144,8 +149,13 @@ function addReplyActs(el, text) {
   if (el.nextElementSibling?.classList.contains('reply-acts')) el.nextElementSibling.remove();
   const acts = document.createElement('div');
   acts.className = 'reply-acts';
-  acts.innerHTML = `<button type="button" class="ra-copy" title="${esc(T('copy'))}">${USER_ACT_ICONS.copy}</button><button type="button" class="ra-bad" title="${esc(T('fbReplyTip'))}">${BAD_ICON}<span>${esc(T('fbReplyBtn'))}</span></button>`;
+  acts.innerHTML = `<button type="button" class="ra-copy" title="${esc(T('copy'))}">${USER_ACT_ICONS.copy}</button><button type="button" class="ra-regen" title="${esc(T('regenTip'))}">${USER_ACT_ICONS.resend}</button><button type="button" class="ra-bad" title="${esc(T('fbReplyTip'))}">${BAD_ICON}<span>${esc(T('fbReplyBtn'))}</span></button>`;
   acts.querySelector('.ra-copy').onclick = () => navigator.clipboard.writeText(text).then(() => showToast(T('copied'), 'info'));
+  acts.querySelector('.ra-regen').onclick = () => {
+    const users = $('log').querySelectorAll('.msg.user');
+    const last = users[users.length - 1];
+    if (last?._payload) rewindAndSend(last, last._payload);
+  };
   acts.querySelector('.ra-bad').onclick = () => openReplyFeedback(text);
   document.querySelectorAll('.reply-acts.latest').forEach((x) => x.classList.remove('latest'));
   acts.classList.add('latest');
@@ -185,6 +195,83 @@ function resendUser(payload) {
   pendingFiles = (payload.files || []).filter((f) => f && f.path).map((f) => ({ name: f.name, path: f.path, size: f.size }));
   renderAttachments();
   submit();
+}
+/** 这条用户消息是对话里的第几条（从 0 数，和主进程的计数一致） */
+function userOrdinal(el) {
+  return [...$('log').querySelectorAll('.msg.user')].indexOf(el);
+}
+/** 改写提问 / 重新回答：对话退回到这条消息之前，再把（改过的）内容发出去 */
+async function rewindAndSend(el, payload, restoreFiles) {
+  if (running) return showToast(T('editBusy'), 'info');
+  const ord = userOrdinal(el);
+  if (ord < 0 || !currentConvId) return;
+  const r = await window.api.rewind(currentConvId, ord, restoreFiles);
+  if (!r?.ok) return showToast(T('rewindFail'), 'error');
+  if (r.restored?.length) showToast(T('rewindRestored', { n: r.restored.length }), 'ok');
+  await openConv(currentConvId);
+  resendUser(payload);
+}
+/** 在消息气泡里直接改：回车发送，Esc 取消 */
+function startEditUser(el) {
+  if (running) return showToast(T('editBusy'), 'info');
+  if (el.classList.contains('editing')) return;
+  const payload = el._payload || { text: '' };
+  const old = el.innerHTML;
+  el.classList.add('editing');
+  const ord = userOrdinal(el);
+  const hasFiles = !!settings.workspace && currentCpOrdinals.some((o) => o >= ord);
+  el.innerHTML = `<textarea class="edit-ta" rows="2"></textarea><div class="edit-row">${hasFiles ? `<label class="edit-hint edit-restore"><input type="checkbox" class="edit-files" />${esc(T('editRestoreFiles'))}</label>` : settings.workspace ? `<span class="edit-hint">${esc(T('editHint'))}</span>` : '<span></span>'}<span class="edit-btns"><button type="button" class="ghost small edit-cancel">${esc(T('cancel'))}</button><button type="button" class="primary small edit-send">${esc(T('send'))}</button></span></div>`;
+  const ta = el.querySelector('.edit-ta');
+  ta.value = payload.text || '';
+  const size = () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 300) + 'px';
+  };
+  ta.addEventListener('input', size);
+  const cancel = () => {
+    el.classList.remove('editing');
+    el.innerHTML = old;
+  };
+  const go = () => {
+    const t = ta.value.trim();
+    if (!t && !payload.images?.length && !payload.files?.length) return;
+    const restore = !!el.querySelector('.edit-files')?.checked;
+    if (t === (payload.text || '').trim() && !restore) return cancel();
+    rewindAndSend(el, { ...payload, text: t }, restore);
+  };
+  el.querySelector('.edit-cancel').onclick = cancel;
+  el.querySelector('.edit-send').onclick = go;
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      go();
+    } else if (e.key === 'Escape') cancel();
+  });
+  size();
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+// ---------- 设置里的「记忆」：查看、逐条删除、清空（删除立即生效） ----------
+async function renderMemory() {
+  const box = $('memoryList');
+  if (!box) return;
+  const r = await window.api.memoryList();
+  const items = r?.items || [];
+  if (!items.length) {
+    box.innerHTML = `<div class="memory-empty">${esc(T('memoryEmpty'))}</div>`;
+    return;
+  }
+  box.innerHTML = items.map((x) => `<div class="memory-item" data-id="${esc(x.id)}"><span class="mt">${esc(x.text)}</span><button type="button" class="memory-del" title="${esc(T('memoryDel'))}">×</button></div>`).join('')
+    + `<div class="memory-foot"><span>${esc(T('memoryCount', { n: items.length, max: r.max }))}</span><button type="button" class="link-btn memory-clear">${esc(T('memoryClear'))}</button></div>`;
+  box.querySelectorAll('.memory-del').forEach((b) => (b.onclick = async () => {
+    await window.api.memoryDelete(b.closest('.memory-item').dataset.id);
+    renderMemory();
+  }));
+  box.querySelector('.memory-clear').onclick = async () => {
+    if (!confirm(T('memoryClearAsk'))) return;
+    await window.api.memoryClear();
+    renderMemory();
+  };
 }
 /** 从保存的消息里取出重新发送需要的内容 */
 function userPayload(m) {
@@ -288,12 +375,21 @@ function autosizeInput() {
 $('input').addEventListener('input', autosizeInput);
 $('sendBtn').innerHTML = SEND_ICONS.send;
 
+/** 发送按钮：空闲 = 发送；运行中输入框为空 = 停止；运行中有字 = 插话（AI 做完这一步就看到） */
+function updateSendBtn() {
+  const steer = running && !!$('input').value.trim();
+  const mode = !running ? 'send' : steer ? 'steer' : 'stop';
+  if ($('sendBtn').dataset.mode === mode) return;
+  $('sendBtn').dataset.mode = mode;
+  $('sendBtn').innerHTML = mode === 'stop' ? SEND_ICONS.stop : SEND_ICONS.send;
+  $('sendBtn').title = mode === 'stop' ? T('stop') : mode === 'steer' ? T('steerTip') : T('send');
+  $('sendBtn').classList.toggle('stop', mode === 'stop');
+}
+$('input').addEventListener('input', () => updateSendBtn());
 function setRunning(v) {
   running = v;
   document.body.classList.toggle('busy', v);
-  $('sendBtn').innerHTML = v ? SEND_ICONS.stop : SEND_ICONS.send;
-  $('sendBtn').title = v ? T('stop') : T('send');
-  $('sendBtn').classList.toggle('stop', v);
+  updateSendBtn();
   if (!v && thinkingEl) {
     thinkingEl.remove();
     thinkingEl = null;
@@ -317,6 +413,10 @@ function toolSummary(name, a) {
   if (name === 'browser_scroll') return a.direction === 'up' ? '↑' : '↓';
   if (/^browser_/.test(name || '')) return '';
   if (name === 'explore') return a.task || '';
+  if (name === 'memory') return a.text || a.id || '';
+  if (name === 'run_command') return (a.background ? '⏵ ' : '') + (a.command || '');
+  if (name === 'command_output') return (a.id || '') + (a.wait ? `  ≤${a.wait}s` : '');
+  if (name === 'command_stop') return a.id || '';
   if (name === 'search') return a.pattern;
   if (name === 'run_command') return a.command;
   if (name === 'generate_image') return a.prompt;
@@ -346,8 +446,14 @@ function renderUndoBar(cp) {
   const names = cp.files.slice(0, 6).join('、') + (cp.files.length > 6 ? T('andMore', { n: cp.files.length }) : '');
   bar.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
     <span class="ub-text" title="${esc(cp.files.join('\n'))}">${esc(T('undoBarText', { n: cp.files.length }))}<small>${esc(names)}</small></span>
-    <button type="button" class="ghost small">${esc(T('undoBtn'))}</button>`;
-  bar.querySelector('button').onclick = async () => {
+    ${cp.git ? `<button type="button" class="ghost small ub-git">${esc(T('gitCommitBtn'))}</button>` : ''}<button type="button" class="ghost small ub-undo">${esc(T('undoBtn'))}</button>`;
+  bar.querySelector('.ub-git')?.addEventListener('click', () => {
+    if (running) return;
+    bar.remove();
+    $('input').value = T('gitCommitMsg');
+    submit();
+  });
+  bar.querySelector('.ub-undo').onclick = async () => {
     const convId = currentConvId;
     let r = await window.api.undoCheckpoint(convId, false);
     if (!r.ok && r.error === 'changed') {
@@ -1039,6 +1145,7 @@ async function openConv(id) {
   settings.workspace = c.workspace || '';
   renderWorkspace();
   renderMessages(c.messages, c.compact, c.toolDiffs);
+  currentCpOrdinals = c.cpOrdinals || [];
   if (c.lastCheckpoint && !c.running) renderUndoBar(c.lastCheckpoint);
   window.api.convContext().then((ctx) => currentConvId === c.id && renderCtx(ctx));
   streamEl = null;
@@ -1136,6 +1243,7 @@ function renderModelSel() {
   $('effortSel').value = settings.effort || 'standard';
 }
 function renderWorkspace() {
+  setTimeout(renderPlanChip, 0);
   const w = settings.workspace;
   $('wsName').textContent = w ? baseName(w) : T('noFolderBtn');
   $('wsBtn').classList.toggle('ws-none', !w);
@@ -1365,10 +1473,61 @@ function showLongBanner(promptTokens) {
   };
 }
 
+// ---------- 方案模式：只在文件夹对话里可用；AI 先只查看、写方案，点「按方案执行」后再动手 ----------
+let planMode = false;
+let runWasPlan = false;
+function renderPlanChip() {
+  const b = $('planModeBtn');
+  if (!b) return;
+  b.classList.toggle('hidden', !settings.workspace);
+  b.classList.toggle('on', planMode && !!settings.workspace);
+}
+$('planModeBtn').onclick = () => {
+  planMode = !planMode;
+  renderPlanChip();
+  showToast(T(planMode ? 'planModeOn' : 'planModeOff'), 'info');
+};
+/** 方案写完：回复下面给「按方案执行」「修改方案」 */
+function addPlanGo() {
+  const replies = $('log').querySelectorAll('.msg.assistant');
+  const last = replies[replies.length - 1];
+  if (!last) return;
+  const anchor = last.nextElementSibling?.classList.contains('reply-acts') ? last.nextElementSibling : last;
+  const box = document.createElement('div');
+  box.className = 'plan-go';
+  box.innerHTML = `<button type="button" class="primary small pg-run">${esc(T('planGo'))}</button><button type="button" class="ghost small pg-edit">${esc(T('planEdit'))}</button>`;
+  box.querySelector('.pg-run').onclick = () => {
+    box.remove();
+    planMode = false;
+    renderPlanChip();
+    $('input').value = T('planGoMsg');
+    submit();
+  };
+  box.querySelector('.pg-edit').onclick = () => {
+    box.remove();
+    $('input').focus();
+  };
+  anchor.after(box);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
 async function submit() {
+  document.querySelectorAll('.plan-go').forEach((x) => x.remove());
   document.getElementById('undoBar')?.remove();
   if (running) {
-    window.api.stop(currentConvId);
+    const t = $('input').value.trim();
+    if (!t) {
+      window.api.stop(currentConvId);
+      return;
+    }
+    // 运行中输入了文字：插话，不打断
+    if (pendingImages.length || pendingFiles.length) return showToast(T('steerNoFiles'), 'info');
+    const r = await window.api.steer(currentConvId, t);
+    if (!r?.ok) return showToast(T('steerLate'), 'info');
+    $('input').value = '';
+    autosizeInput();
+    updateSendBtn();
+    addUserMsg(userHtml(t), { text: t, images: [], files: [] }).classList.add('steer-pending');
     return;
   }
   const text = $('input').value.trim();
@@ -1394,7 +1553,8 @@ async function submit() {
   setRunning(true);
   expectRun = !currentConvId;
   if (currentConvId) runningConvs.add(currentConvId);
-  const started = await window.api.send(images.length || files.length ? { text, images, files: files.map((f) => f.path) } : text);
+  runWasPlan = planMode && !!settings.workspace;
+  const started = await window.api.send(images.length || files.length || runWasPlan ? { text, images, files: files.map((f) => f.path), ...(runWasPlan ? { planMode: true } : {}) } : text);
   if (started === false || (started && started.ok === false)) {
     expectRun = false;
     if (currentConvId) runningConvs.delete(currentConvId);
@@ -1600,7 +1760,7 @@ function renderStream(final) {
 }
 
 // ---------- 后台运行：多个对话可以同时跑，界面只显示当前对话的输出 ----------
-const CONV_EVENTS = new Set(['context', 'compacted', 'notice', 'expert-start', 'thinking', 'status', 'assistant-start', 'assistant-delta', 'assistant-end', 'tool', 'plan', 'image', 'audio', 'confirm', 'confirm-timeout', 'usage', 'error', 'platform-error', 'done', 'suggestion']);
+const CONV_EVENTS = new Set(['steer-applied', 'steer-left', 'context', 'compacted', 'notice', 'expert-start', 'thinking', 'status', 'assistant-start', 'assistant-delta', 'assistant-end', 'tool', 'plan', 'image', 'audio', 'confirm', 'confirm-timeout', 'usage', 'error', 'platform-error', 'done', 'suggestion']);
 const runningConvs = new Set(); // 正在运行的对话
 const unreadConvs = new Set(); // 在后台跑完、用户还没看的对话
 const confirmQueue = new Map(); // convId -> 等用户确认的事件（后台对话的确认，打开对话时再弹）
@@ -1629,6 +1789,25 @@ window.api.onEvent((evt) => {
     if (evt.convId !== currentConvId) return backgroundEvent(evt);
   }
   switch (evt.type) {
+    case 'steer-applied':
+      document.querySelectorAll('.msg.user.steer-pending').forEach((x) => x.classList.remove('steer-pending'));
+      break;
+    case 'steer-left': {
+      // 插话没赶上（任务刚好结束或停止）：从对话里拿掉，放回输入框
+      document.querySelectorAll('.msg.user.steer-pending').forEach((x) => {
+        if (x.nextElementSibling?.classList.contains('user-acts')) x.nextElementSibling.remove();
+        x.remove();
+      });
+      const cur = $('input').value.trim();
+      $('input').value = [...evt.texts, cur].filter(Boolean).join('\n');
+      autosizeInput();
+      updateSendBtn();
+      showToast(T('steerBack'), 'info');
+      break;
+    }
+    case 'memory-changed':
+      if (!$('settingsModal')?.classList.contains('hidden')) renderMemory();
+      break;
     case 'context':
       renderCtx(evt.ctx);
       break;
@@ -1826,7 +2005,10 @@ window.api.onEvent((evt) => {
       break;
     case 'done':
       planEl?.classList.add('idle');
-      if (evt.checkpoint) setTimeout(() => renderUndoBar(evt.checkpoint), 0);
+      if (evt.checkpoint) {
+        setTimeout(() => renderUndoBar(evt.checkpoint), 0);
+        if (evt.checkpoint.ordinal >= 0) currentCpOrdinals = [...new Set([...currentCpOrdinals, evt.checkpoint.ordinal])];
+      }
       if (streamEl) {
         renderStream(true);
         addReplyActs(streamEl, streamText);
@@ -1835,6 +2017,8 @@ window.api.onEvent((evt) => {
       setRunning(false);
       refreshConvs();
       renderExpertBar();
+      if (runWasPlan && !evt.stopped && !evt.failed) setTimeout(addPlanGo, 0);
+      runWasPlan = false;
       break;
   }
 });
@@ -1852,7 +2036,8 @@ function showConfirm(evt) {
       `<label class="confirm-choice"><span>${esc(c.label)}</span><select data-key="${esc(c.key)}">${c.options.map((o) =>
         `<option value="${esc(String(o.value))}"${String(o.value) === String(c.value) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`).join('');
   } else if (evt.command) {
-    body.innerHTML = `<div class="cmd">${evt.tool === 'run_command' ? '$ ' : ''}${esc(evt.command)}</div>`;
+    body.innerHTML = `<div class="cmd">${evt.tool === 'run_command' ? '$ ' : ''}${esc(evt.command)}</div>`
+      + (evt.allowKey ? `<label class="confirm-always"><input type="checkbox" id="confirmAlways" /><span>${esc(T('allowAlways', { cmd: evt.allowKey }))}</span></label>` : '');
   } else {
     body.innerHTML = diffHtml(evt.diff);
   }
@@ -1867,6 +2052,7 @@ function showConfirm(evt) {
       const opt = c?.options.find((o) => String(o.value) === sel.value);
       values[sel.dataset.key] = opt ? opt.value : sel.value;
     });
+    if (ok && document.getElementById('confirmAlways')?.checked) values.always = true;
     window.api.confirmReply(evt.id, ok, values);
   };
   $('confirmYes').onclick = () => done(true);
@@ -2416,6 +2602,8 @@ function openSettings(tab = 'models') {
   $('customBaseUrl').value = settings.customBaseUrl || '';
 
   $('customInstructions').value = settings.customInstructions || '';
+  $('memoryOn').checked = settings.memory !== false;
+  renderMemory();
   $('temperature').value = settings.temperature;
   $('tempVal').textContent = settings.temperature;
   $('maxSteps').value = settings.maxSteps;
@@ -2424,6 +2612,7 @@ function openSettings(tab = 'models') {
   $('imageWatermark').checked = settings.imageWatermark !== false;
   $('approvalSel2').value = settings.approval;
   $('blockedCommands').value = (settings.blockedCommands || []).join('\n');
+  $('allowedCommands').value = (settings.allowedCommands || []).join('\n');
   $('commandTimeout').value = settings.commandTimeout;
   $('ignoreDirs').value = (settings.ignoreDirs || []).join(', ');
   $('language').value = lang();
@@ -2474,12 +2663,14 @@ $('settingsSave').onclick = async () => {
     extraModels,
     customBaseUrl: $('customBaseUrl').value.trim(),
     customInstructions: $('customInstructions').value.trim(),
+    memory: $('memoryOn').checked,
     temperature: Number($('temperature').value),
     maxSteps: clampNum($('maxSteps').value, 5, 200, 40),
     suggestNext: $('suggestNext').checked,
     errorReports: $('errorReports').checked,
     approval: $('approvalSel2').value,
     blockedCommands: $('blockedCommands').value.split('\n').map((l) => l.trim()).filter(Boolean),
+    allowedCommands: $('allowedCommands').value.split('\n').map((l) => l.trim().replace(/\s+/g, ' ')).filter(Boolean),
     commandTimeout: clampNum($('commandTimeout').value, 5, 3600, 60),
     ignoreDirs: $('ignoreDirs').value.split(/[,，]+/).map((x) => x.trim()).filter(Boolean),
     theme: $('theme').value,

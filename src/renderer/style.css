@@ -1344,3 +1344,33 @@ body.busy .plan-card:not(.idle) li.in_progress i { animation: plan-spin .8s line
 .empty-notes { margin-top: 14px; font-size: 13px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .empty-notes a { color: var(--accent); cursor: pointer; }
 .empty-notes .hint { font-size: 12px; }
+
+/* 回答中途插话：还没被 AI 看到时淡一点 */
+.msg.user.steer-pending { opacity: .55; }
+/* 重新回答只在最新一条回复上；运行中不显示编辑 / 重新回答 */
+.reply-acts:not(.latest) .ra-regen, body.busy .ra-regen, body.busy .ua-edit { display: none; }
+/* 在气泡里改写提问 */
+.msg.user.editing { width: min(100%, 640px); max-width: 100%; }
+.msg.user .edit-ta { width: 100%; box-sizing: border-box; resize: none; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font: inherit; color: var(--text); background: var(--bg); outline: none; line-height: 1.6; }
+.msg.user .edit-ta:focus { border-color: var(--accent); }
+.msg.user .edit-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.msg.user .edit-hint { font-size: 12px; color: var(--muted); }
+.msg.user .edit-btns { display: flex; gap: 6px; flex-shrink: 0; }
+/* 设置 → 记忆 */
+.memory-list { margin: -4px 0 14px; border: 1px solid var(--border); border-radius: 10px; max-height: 220px; overflow: auto; }
+.memory-empty { padding: 10px 12px; font-size: 12.5px; color: var(--muted); }
+.memory-item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px 7px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+.memory-item .mt { flex: 1; line-height: 1.5; word-break: break-word; }
+.memory-item .memory-del { border: none; background: none; box-shadow: none; color: var(--muted); font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.memory-item .memory-del:hover { background: var(--hover); color: var(--text); }
+.memory-foot { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; font-size: 12px; color: var(--muted); }
+/* 确认框：以后都允许这类命令 */
+.confirm-always { font-family: var(--font); display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.confirm-always input { margin: 0; }
+/* 方案模式开关和「按方案执行」 */
+.plan-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; background: none; box-shadow: none; color: var(--muted); font-size: 12.5px; padding: 4px 9px; border-radius: 999px; cursor: pointer; margin-left: 4px; }
+.plan-chip:hover { background: var(--hover); color: var(--text); }
+.plan-chip.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.plan-go { display: flex; gap: 8px; margin: -4px 0 16px 2px; }
+.msg.user .edit-restore { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.msg.user .edit-restore input { margin: 0; }

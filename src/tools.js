@@ -129,12 +129,37 @@ const definitions = [
     type: 'function',
     function: {
       name: 'run_command',
-      description: '在工作目录下执行 shell 命令（如运行测试、git status）。有超时限制。',
+      description: '在工作目录下执行 shell 命令（如运行测试、git status）。有超时限制。启动开发服务器、监听编译、很久才跑完的构建或测试时设 background=true：立即返回编号，命令在后台继续运行，之后用 command_output 查看输出、command_stop 停止。',
       parameters: {
         type: 'object',
-        properties: { command: { type: 'string' } },
+        properties: {
+          command: { type: 'string' },
+          background: { type: 'boolean', description: '放到后台运行（不等它结束）' },
+        },
         required: ['command'],
       },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'command_output',
+      description: '查看后台命令的状态和新输出（上次查看之后的部分）。wait 秒数内命令结束就提前返回，适合等构建 / 测试跑完。',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '后台命令编号，如 bg1；不填则列出全部后台命令' },
+          wait: { type: 'number', description: '最多等几秒（0～120），默认 0' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'command_stop',
+      description: '停止一个后台命令（连同它启动的子进程）。',
+      parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     },
   },
 ];
@@ -674,6 +699,91 @@ function runCommand(root, command, signal, timeoutSec = 60, extraPath = []) {
   });
 }
 
+// ---------- 后台命令：开发服务器、监听编译、跑很久的构建 ----------
+const BG_MAX = 5; // 同时最多几个
+const BG_KEEP = 200 * 1024; // 每个最多保留多少字符的输出（超出丢掉最早的）
+const bgJobs = new Map(); // id -> { child, command, root, out, readPos, dropped, done, code, startedAt }
+let bgSeq = 0;
+function bgAppend(job, chunk) {
+  job.out += chunk;
+  if (job.out.length > BG_KEEP) {
+    const cut = job.out.length - BG_KEEP;
+    job.out = job.out.slice(cut);
+    job.dropped += cut;
+    job.readPos = Math.max(0, job.readPos - cut);
+  }
+}
+function startBackground(root, command, extraPath = []) {
+  const running = [...bgJobs.values()].filter((j) => !j.done);
+  if (running.length >= BG_MAX) return T('bgCmdTooMany', { n: BG_MAX, list: running.map((j) => `${j.id}: ${j.command}`).join('\n') });
+  const isWin = process.platform === 'win32';
+  const shell = isWin ? process.env.ComSpec || 'cmd.exe' : process.env.SHELL || '/bin/zsh';
+  const args = isWin ? ['/d', '/s', '/c', `chcp 65001>nul & ${command}`] : ['-c', command];
+  const env = { ...process.env, ...(extraPath.length ? { PATH: [...extraPath, process.env.PATH || ''].join(path.delimiter) } : {}), FORCE_COLOR: '0' };
+  // 非 Windows 用独立进程组，停止时能连子进程一起结束
+  const child = require('child_process').spawn(shell, args, { cwd: root, env, windowsHide: true, detached: !isWin });
+  const id = 'bg' + ++bgSeq;
+  const job = { id, child, command, root, out: '', readPos: 0, dropped: 0, done: false, code: null, startedAt: Date.now(), waiters: [] };
+  bgJobs.set(id, job);
+  child.stdout.on('data', (d) => bgAppend(job, d.toString()));
+  child.stderr.on('data', (d) => bgAppend(job, d.toString()));
+  const finish = (code) => {
+    if (job.done) return;
+    job.done = true;
+    job.code = code;
+    job.waiters.splice(0).forEach((f) => f());
+  };
+  child.on('exit', (code, sig) => finish(code ?? sig ?? '?'));
+  child.on('error', (e) => (bgAppend(job, String(e.message)), finish('error')));
+  return T('bgCmdStarted', { id });
+}
+function bgKill(job) {
+  if (job.done) return;
+  try {
+    if (process.platform === 'win32') require('child_process').exec(`taskkill /pid ${job.child.pid} /T /F`, { windowsHide: true });
+    else process.kill(-job.child.pid, 'SIGTERM');
+  } catch {
+    try { job.child.kill(); } catch {}
+  }
+}
+function fmtAge(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + (s % 60) + 's';
+}
+async function bgOutput(id, wait = 0, signal) {
+  if (!id) {
+    if (!bgJobs.size) return T('bgCmdNone');
+    return [...bgJobs.values()].map((j) => `${j.id}  ${j.done ? T('bgCmdExited', { code: j.code }) : T('bgCmdRunning', { t: fmtAge(Date.now() - j.startedAt) })}  $ ${j.command}`).join('\n');
+  }
+  const job = bgJobs.get(String(id));
+  if (!job) return T('bgCmdNotFound', { id });
+  const w = Math.min(120, Math.max(0, Number(wait) || 0));
+  if (w && !job.done) {
+    await new Promise((resolve) => {
+      const t = setTimeout(resolve, w * 1000);
+      job.waiters.push(() => (clearTimeout(t), resolve()));
+      signal?.addEventListener('abort', () => (clearTimeout(t), resolve()), { once: true });
+    });
+  }
+  const fresh = job.out.slice(job.readPos);
+  job.readPos = job.out.length;
+  const head = job.done ? T('bgCmdExited', { code: job.code }) : T('bgCmdRunning', { t: fmtAge(Date.now() - job.startedAt) });
+  const body = squeeze(fresh, { similar: T('sqSimilar'), repeat: T('sqRepeat'), skipped: T('sqSkipped'), cut: T('midTruncated') }, job.done && job.code !== 0);
+  return `${job.id} ${head}\n${body || T('bgCmdNoNew')}`;
+}
+function bgStop(id) {
+  const job = bgJobs.get(String(id));
+  if (!job) return T('bgCmdNotFound', { id });
+  if (job.done) return T('bgCmdExited', { code: job.code });
+  bgKill(job);
+  return T('bgCmdStopped', { id: job.id });
+}
+/** 退出应用时：停掉所有后台命令 */
+function bgKillAll() {
+  for (const j of bgJobs.values()) bgKill(j);
+}
+
 module.exports = {
+  startBackground, bgOutput, bgStop, bgKillAll,
   lineDiff,
   diffStats, setLang, DEFAULT_IGNORE, definitions, safePath, listDir, readFile, readFileAt, search, findFiles, globToRegExp, applyEdit, applyEdits, replaceAll, makeEditPreview, backup, runCommand };
