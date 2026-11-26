@@ -77,6 +77,7 @@ document.addEventListener('click', (e) => {
 // ---------- 聊天区 ----------
 function clearLog() {
   currentCpOrdinals = [];
+  stickBottom = true;
   setSuggestion('');
   hideLongBanner();
   const w = settings?.workspace || '';
@@ -106,11 +107,37 @@ function clearLog() {
   $('usage').textContent = '';
   renderCtx(null);
 }
+// ---------- 跟随到底部：用户往上翻看时不强行拉回；离开底部时显示「回到最新」按钮（运行中显示省略号） ----------
+let stickBottom = true;
+function scrollToEnd(force) {
+  const log = $('log');
+  if (force) stickBottom = true;
+  if (stickBottom) log.scrollTop = log.scrollHeight;
+  updateToBottom();
+}
+function updateToBottom() {
+  const log = $('log');
+  const b = $('toBottom');
+  if (!b) return;
+  const far = log.scrollHeight - log.scrollTop - log.clientHeight > 160;
+  b.classList.toggle('hidden', !far);
+  b.classList.toggle('busy', running);
+  b.title = T(running ? 'toBottomBusy' : 'toBottom');
+}
+$('log').addEventListener('scroll', () => {
+  const log = $('log');
+  stickBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  updateToBottom();
+}, { passive: true });
+$('toBottom').onclick = () => {
+  stickBottom = true;
+  $('log').scrollTo({ top: $('log').scrollHeight, behavior: 'smooth' });
+};
 function append(el) {
   $('emptyHint')?.remove();
   const log = $('log');
   log.insertBefore(el, thinkingEl && thinkingEl.parentNode ? thinkingEl : null);
-  log.scrollTop = log.scrollHeight;
+  scrollToEnd();
 }
 function addMsg(cls, html) {
   const d = document.createElement('div');
@@ -330,7 +357,7 @@ function showToolImageGrid(callId, absPath) {
   img.onerror = () => img.remove();
   grid.appendChild(img);
   el.open = true;
-  $('log').scrollTop = $('log').scrollHeight;
+  scrollToEnd();
 }
 function showToolImage(callId, absPath) {
   const el = toolEls[callId];
@@ -343,7 +370,7 @@ function showToolImage(callId, absPath) {
   img.onerror = () => img.remove();
   el.insertBefore(img, el.querySelector('pre'));
   el.open = true;
-  $('log').scrollTop = $('log').scrollHeight;
+  scrollToEnd();
 }
 
 // 配音结果：在工具卡片里放一个播放器
@@ -359,7 +386,7 @@ function showToolAudio(callId, absPath) {
   au.onerror = () => au.remove();
   el.insertBefore(au, el.querySelector('pre'));
   el.open = true;
-  $('log').scrollTop = $('log').scrollHeight;
+  scrollToEnd();
 }
 
 const SEND_ICONS = {
@@ -390,6 +417,7 @@ function setRunning(v) {
   running = v;
   document.body.classList.toggle('busy', v);
   updateSendBtn();
+  updateToBottom();
   if (!v && thinkingEl) {
     thinkingEl.remove();
     thinkingEl = null;
@@ -1508,7 +1536,7 @@ function addPlanGo() {
     $('input').focus();
   };
   anchor.after(box);
-  $('log').scrollTop = $('log').scrollHeight;
+  scrollToEnd();
 }
 
 async function submit() {
@@ -1527,6 +1555,7 @@ async function submit() {
     $('input').value = '';
     autosizeInput();
     updateSendBtn();
+    stickBottom = true;
     addUserMsg(userHtml(t), { text: t, images: [], files: [] }).classList.add('steer-pending');
     return;
   }
@@ -1549,6 +1578,7 @@ async function submit() {
   pendingImages = [];
   pendingFiles = [];
   renderAttachments();
+  stickBottom = true;
   addUserMsg(userHtml(images.length ? [{ type: 'text', text }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] : text, files), { text, images, files });
   setRunning(true);
   expectRun = !currentConvId;
@@ -1738,7 +1768,7 @@ function showThinking(text) {
     $('log').appendChild(thinkingEl);
   }
   thinkingEl.textContent = text;
-  $('log').scrollTop = $('log').scrollHeight;
+  scrollToEnd();
 }
 function hideThinking() {
   thinkingEl?.remove();
@@ -1753,10 +1783,8 @@ let renderQueued = false;
 function renderStream(final) {
   renderQueued = false;
   if (!streamEl) return;
-  const log = $('log');
-  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
   streamEl.innerHTML = (streamExpert ? expertTag(streamExpert) : '') + md(streamText) + (final ? '' : '<span class="cursor"></span>');
-  if (nearBottom) log.scrollTop = log.scrollHeight;
+  scrollToEnd();
 }
 
 // ---------- 后台运行：多个对话可以同时跑，界面只显示当前对话的输出 ----------

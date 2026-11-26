@@ -1,7 +1,7 @@
 {
   "name": "shuttle",
   "productName": "Shuttle",
-  "version": "0.3.71",
+  "version": "0.3.72",
   "description": "Shuttle（梭子）桌面 AI 助手（Electron）：登录后使用平台大模型操作本地文件和代码，服务端为 mamahug 若依后端的 aidesk 产品线",
   "main": "boot.js",
   "scripts": {
