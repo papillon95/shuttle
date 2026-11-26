@@ -3123,7 +3123,32 @@ const FREE_MODEL = 'openrouter:openrouter/free'; // Shuttle 自带模型（不�
 let plansCache = [];
 let plansPromo = null; // 首月优惠 { planCode, priceCents }
 let planPeriod = 'month';
+// 兑换码：在闲鱼等平台买到的码，输入后自动开通
+$('redeemBtn').onclick = async () => {
+  const code = $('redeemInput').value.trim();
+  if (!code) return $('redeemInput').focus();
+  $('redeemBtn').disabled = true;
+  $('redeemMsg').textContent = '';
+  const r = await window.api.call('POST', '/aidesk/redeem', { code });
+  $('redeemBtn').disabled = false;
+  if (!r.ok) {
+    $('redeemMsg').className = 'hint bad';
+    $('redeemMsg').textContent = errText(r);
+    return;
+  }
+  $('redeemInput').value = '';
+  $('redeemMsg').className = 'hint ok';
+  $('redeemMsg').textContent = T('redeemOk', { plan: r.data.planName + (r.data.units > 1 ? ' × ' + r.data.units : '') });
+  if (r.data.quota) {
+    quota = r.data.quota;
+    renderQuota();
+  }
+  refreshQuota();
+  loadOrders();
+};
+$('redeemInput').addEventListener('keydown', (e) => e.key === 'Enter' && $('redeemBtn').click());
 async function openPlans(reason, requiredLevel) {
+  $('redeemMsg').textContent = '';
   $('planReason').textContent = reason === 'plan_required' ? T('needLevel', { level: levelName(requiredLevel || 1) }) : reason === 'quota_exceeded' ? T('err_quota_exceeded') : T('membershipHint');
   $('orderBox').classList.add('hidden');
   $('planModal').classList.remove('hidden');

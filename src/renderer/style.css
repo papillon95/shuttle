@@ -1316,3 +1316,9 @@ body.busy .plan-card:not(.idle) li.in_progress i { animation: plan-spin .8s line
 .ck-rules { list-style: none; margin: 4px 0 16px; padding: 10px 14px; background: var(--side); border-radius: 10px; text-align: left; font-size: 13px; line-height: 1.8; }
 .ck-go { width: 100%; height: 42px; font-size: 15px; }
 .ck-go:disabled { opacity: .55; }
+
+/* 兑换码 */
+.redeem-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 14px 0 4px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 10px; font-size: 13px; }
+.redeem-row input { flex: 1; min-width: 200px; font-family: var(--mono, ui-monospace, Menlo, monospace); letter-spacing: .5px; text-transform: uppercase; }
+.redeem-row .hint.ok { color: var(--ok, #1d7a3e); }
+.redeem-row .hint.bad { color: var(--danger, #d0453a); }
