@@ -293,6 +293,7 @@
           <div class="field inline"><span><span data-i18n="shortcutQuick"></span><span class="hint"><kbd class="kbd" id="quickKbd"></kbd></span></span><button id="quickTry" class="ghost" type="button" data-i18n="shortcutTry"></button></div>
           <label class="field inline"><span><span data-i18n="suggestNext"></span><span class="hint" data-i18n="suggestNextHint"></span></span><input type="checkbox" id="suggestNext" /></label>
           <label class="field inline"><span><span data-i18n="imageWatermark"></span><span class="hint" data-i18n="imageWatermarkHint"></span></span><input type="checkbox" id="imageWatermark" /></label>
+          <label class="field inline"><span><span data-i18n="errorReports"></span><span class="hint" data-i18n="errorReportsHint"></span></span><input type="checkbox" id="errorReports" /></label>
           <label class="field"><span data-i18n="maxSteps"></span>
             <span class="hint" data-i18n="maxStepsHint"></span>
             <input type="number" id="maxSteps" min="5" max="200" />
@@ -572,6 +573,15 @@
   </div>
 
   <!-- 会员开通 -->
+  <div class="modal hidden" id="replyFbModal">
+    <div class="card fb-card">
+      <h3 data-i18n="fbReplyTitle"></h3>
+      <div class="fb-reasons" id="fbReasons"></div>
+      <textarea id="fbReplyNote" rows="3" maxlength="2000" data-i18n-ph="fbReplyPh"></textarea>
+      <label class="fb-attach"><input type="checkbox" id="fbReplyAttach" /><span><span data-i18n="fbReplyAttach"></span><span class="hint" data-i18n="fbReplyAttachHint"></span></span></label>
+      <div class="row"><div class="spacer"></div><button id="fbReplyCancel" class="ghost" type="button" data-i18n="cancel"></button><button id="fbReplySend" class="primary" type="button" data-i18n="fbReplySend"></button></div>
+    </div>
+  </div>
   <div class="modal hidden" id="payModal">
     <div class="card pay-card">
       <h3 data-i18n="payTitle"></h3>

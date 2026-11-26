@@ -107,4 +107,6 @@ contextBridge.exposeInMainWorld('api', {
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   restartToUpdate: () => ipcRenderer.invoke('update:restart'),
   onEvent: (cb) => ipcRenderer.on('agent:event', (_e, evt) => cb(evt)),
+  reportError: (p) => ipcRenderer.send('errlog:report', p),
+  replyFeedback: (p) => ipcRenderer.invoke('feedback:reply', p),
 });

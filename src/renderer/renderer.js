@@ -10,6 +10,9 @@ let running = false;
 let thinkingEl = null;
 let toolEls = {};
 let currentConvId = null;
+// 界面报错自动上报（主进程去掉隐私信息、合并同类后再发）
+window.addEventListener('error', (e) => window.api?.reportError?.({ message: e.message || String(e.error || ''), stack: e.error?.stack || `${e.filename}:${e.lineno}:${e.colno}`, source: 'error' }));
+window.addEventListener('unhandledrejection', (e) => window.api?.reportError?.({ message: e.reason?.message || String(e.reason || ''), stack: e.reason?.stack || '', source: 'promise' }));
 
 // ---------- 多语言 ----------
 const lang = () => (settings && settings.language) || 'zh';
@@ -115,6 +118,7 @@ const USER_ACT_ICONS = {
 };
 /** payload：{ text, images: [dataURL], files: [{name, path, size}] } */
 function addUserMsg(html, payload) {
+  planEl = null;
   const el = addMsg('user', html);
   const acts = document.createElement('div');
   acts.className = 'user-acts';
@@ -127,6 +131,46 @@ function addUserMsg(html, payload) {
   el.after(acts);
   return el;
 }
+// 助手回复下面的「复制」「有问题」：回答不对、没做完、报错时点一下，带上对话发给我们
+const BAD_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.1 10 14H4.2a2 2 0 0 1-1.9-2.6l2.3-7A2 2 0 0 1 6.5 3H17v11l-4.3 6.5a1.5 1.5 0 0 1-2.7-.9z"/></svg>';
+function addReplyActs(el, text) {
+  if (!el || !String(text || '').trim()) return;
+  if (el.nextElementSibling?.classList.contains('reply-acts')) el.nextElementSibling.remove();
+  const acts = document.createElement('div');
+  acts.className = 'reply-acts';
+  acts.innerHTML = `<button type="button" class="ra-copy" title="${esc(T('copy'))}">${USER_ACT_ICONS.copy}</button><button type="button" class="ra-bad" title="${esc(T('fbReplyTip'))}">${BAD_ICON}<span>${esc(T('fbReplyBtn'))}</span></button>`;
+  acts.querySelector('.ra-copy').onclick = () => navigator.clipboard.writeText(text).then(() => showToast(T('copied'), 'info'));
+  acts.querySelector('.ra-bad').onclick = () => openReplyFeedback(text);
+  document.querySelectorAll('.reply-acts.latest').forEach((x) => x.classList.remove('latest'));
+  acts.classList.add('latest');
+  el.after(acts);
+}
+const FB_REASONS = ['wrong', 'incorrect', 'unfinished', 'slow', 'error', 'other'];
+let fbReplyText = '';
+function openReplyFeedback(text) {
+  if (!currentUser) return showToast(T('needLogin'), 'info');
+  fbReplyText = text;
+  $('fbReasons').innerHTML = FB_REASONS.map((r) => `<button type="button" class="fb-reason" data-r="${r}">${esc(T('fbR_' + r))}</button>`).join('');
+  $('fbReasons').querySelectorAll('.fb-reason').forEach((b) => (b.onclick = () => b.classList.toggle('on')));
+  $('fbReplyNote').value = '';
+  $('fbReplyAttach').checked = true;
+  $('fbReplySend').disabled = false;
+  $('replyFbModal').classList.remove('hidden');
+  $('fbReplyNote').focus();
+}
+$('fbReplyCancel').onclick = () => $('replyFbModal').classList.add('hidden');
+$('fbReplySend').onclick = async () => {
+  const reasons = [...$('fbReasons').querySelectorAll('.fb-reason.on')].map((b) => T('fbR_' + b.dataset.r));
+  const note = $('fbReplyNote').value.trim();
+  if (!reasons.length && !note) return showToast(T('fbReplyEmpty'), 'info');
+  $('fbReplySend').disabled = true;
+  const r = await window.api.replyFeedback({ convId: currentConvId, text: fbReplyText, reasons, note, attach: $('fbReplyAttach').checked });
+  $('fbReplySend').disabled = false;
+  if (!r?.ok) return showToast(errText(r || {}), 'error');
+  $('replyFbModal').classList.add('hidden');
+  showToast(T('fbReplyThanks'), 'ok');
+};
+
 /** 重新发送：把这条消息（文字、图片、附件）原样再发一次 */
 function resendUser(payload) {
   if (running) return showToast(T('resendBusy'), 'info');
@@ -285,7 +329,26 @@ function diffHtml(rows) {
     )
     .join('');
 }
+// ---------- 任务清单（AI 调用 update_plan 时显示，同一轮对话里只有一张，原地更新） ----------
+let planEl = null;
+const PLAN_ST = ['pending', 'in_progress', 'completed'];
+function renderPlan(raw) {
+  const items = (Array.isArray(raw) ? raw : []).map((x) => ({ content: String(x?.content || '').slice(0, 80), status: PLAN_ST.includes(x?.status) ? x.status : 'pending' })).filter((x) => x.content).slice(0, 12);
+  if (!items.length) return;
+  if (!planEl || !planEl.isConnected) {
+    document.querySelectorAll('#log .plan-card').forEach((x) => x.classList.add('idle'));
+    planEl = document.createElement('div');
+    planEl.className = 'plan-card';
+  }
+  append(planEl); // 每次更新都挪到最新位置，跟着进度走，不会被滚出屏幕
+  const done = items.filter((x) => x.status === 'completed').length;
+  planEl.classList.toggle('all-done', done === items.length);
+  planEl.innerHTML = `<div class="plan-head"><span>${esc(T('planTitle'))}</span><span class="plan-count">${done}/${items.length}</span></div><ul>${items
+    .map((x) => `<li class="${x.status}"><i></i><span>${esc(x.content)}</span></li>`)
+    .join('')}</ul>`;
+}
 function renderTool(evt) {
+  if (evt.name === 'update_plan') return; // 不显示成工具行，由清单卡片显示
   let el = toolEls[evt.id];
   if (!el) {
     el = document.createElement('details');
@@ -630,14 +693,15 @@ function renderMessages(messages, compact, toolDiffs) {
     if (m.role === 'user' && m.expertAsk) addMsg('expert-ask', esc(T('expertAskMsg', { name: expertName(m.expertAsk) })));
     else if (m.role === 'user') addUserMsg(m.attachments ? userHtml(m.userText ?? '', m.attachments) + imgOnly(m.content) : userHtml(m.content), userPayload(m));
     else if (m.role === 'assistant') {
-      if (m.content) addMsg('assistant' + (m.expert ? ' from-expert' : ''), (m.expert ? expertTag(expertName(m.expert) + (m.expertModel ? `（${m.expertModel}）` : '')) : '') + md(m.content));
+      if (m.content) addReplyActs(addMsg('assistant' + (m.expert ? ' from-expert' : ''), (m.expert ? expertTag(expertName(m.expert) + (m.expertModel ? `（${m.expertModel}）` : '')) : '') + md(m.content)), typeof m.content === 'string' ? m.content : '');
       for (const c of m.tool_calls || []) {
         let args = {};
         try {
           args = JSON.parse(c.function.arguments || '{}');
         } catch {}
         calls[c.id] = { name: c.function.name, args };
-        renderTool({ id: c.id, ...calls[c.id], status: 'running' });
+        if (c.function.name === 'update_plan') renderPlan(args.items);
+        else renderTool({ id: c.id, ...calls[c.id], status: 'running' });
       }
     } else if (m.role === 'tool') {
       const call = calls[m.tool_call_id] || { name: '?' };
@@ -1501,7 +1565,7 @@ function renderStream(final) {
 }
 
 // ---------- 后台运行：多个对话可以同时跑，界面只显示当前对话的输出 ----------
-const CONV_EVENTS = new Set(['context', 'compacted', 'notice', 'expert-start', 'thinking', 'status', 'assistant-start', 'assistant-delta', 'assistant-end', 'tool', 'image', 'audio', 'confirm', 'confirm-timeout', 'usage', 'error', 'platform-error', 'done', 'suggestion']);
+const CONV_EVENTS = new Set(['context', 'compacted', 'notice', 'expert-start', 'thinking', 'status', 'assistant-start', 'assistant-delta', 'assistant-end', 'tool', 'plan', 'image', 'audio', 'confirm', 'confirm-timeout', 'usage', 'error', 'platform-error', 'done', 'suggestion']);
 const runningConvs = new Set(); // 正在运行的对话
 const unreadConvs = new Set(); // 在后台跑完、用户还没看的对话
 const confirmQueue = new Map(); // convId -> 等用户确认的事件（后台对话的确认，打开对话时再弹）
@@ -1586,10 +1650,14 @@ window.api.onEvent((evt) => {
       break;
     case 'assistant-end':
       renderStream(true);
+      addReplyActs(streamEl, streamText);
       streamEl = null;
       break;
     case 'tool':
       renderTool(evt);
+      break;
+    case 'plan':
+      renderPlan(evt.items);
       break;
     case 'image':
       if (evt.multi) showToolImageGrid(evt.callId, evt.path);
@@ -1709,8 +1777,10 @@ window.api.onEvent((evt) => {
       addMsg('error', esc(evt.text));
       break;
     case 'done':
+      planEl?.classList.add('idle');
       if (streamEl) {
         renderStream(true);
+        addReplyActs(streamEl, streamText);
         streamEl = null;
       }
       setRunning(false);
@@ -2301,6 +2371,7 @@ function openSettings(tab = 'models') {
   $('tempVal').textContent = settings.temperature;
   $('maxSteps').value = settings.maxSteps;
   $('suggestNext').checked = settings.suggestNext !== false;
+  $('errorReports').checked = settings.errorReports !== false;
   $('imageWatermark').checked = settings.imageWatermark !== false;
   $('approvalSel2').value = settings.approval;
   $('blockedCommands').value = (settings.blockedCommands || []).join('\n');
@@ -2357,6 +2428,7 @@ $('settingsSave').onclick = async () => {
     temperature: Number($('temperature').value),
     maxSteps: clampNum($('maxSteps').value, 5, 200, 40),
     suggestNext: $('suggestNext').checked,
+    errorReports: $('errorReports').checked,
     approval: $('approvalSel2').value,
     blockedCommands: $('blockedCommands').value.split('\n').map((l) => l.trim()).filter(Boolean),
     commandTimeout: clampNum($('commandTimeout').value, 5, 3600, 60),
@@ -3034,6 +3106,15 @@ async function createOrder(planCode) {
   if (payChannels.includes('wechat')) return payOrder(o.orderNo);
   showManualPay(o, true);
 }
+// 订单有效期：在等客服确认截图的不会过期；其余显示「请在 x 前付款」
+function orderExpireText(o) {
+  if (o.status !== 'pending') return '';
+  if (o.waitingReview) return T('orderWaitingReview');
+  if (!o.expireTime) return '';
+  const d = new Date(String(o.expireTime).replace(' ', 'T') + '+08:00');
+  const p2 = (n) => String(n).padStart(2, '0');
+  return T('orderExpireAt', { t: `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())}` });
+}
 // 还没接在线支付：显示订单号（可复制）、收款码、客服微信，让用户转账时备注订单号，客服确认收款后开通
 function showManualPay(o, justCreated) {
   const box = $('orderBox');
@@ -3047,6 +3128,7 @@ function showManualPay(o, justCreated) {
   box.innerHTML = `<b>${esc(T(justCreated ? 'orderCreated' : 'manualPayTitle'))}</b>
     <div class="pay-sorry">${esc(T('paySorry'))}</div>
     <div class="manual-row">${esc(T('orderInfo', { no: o.orderNo, plan: o.planName || '', amount: yuan(o.amountCents) }))} ${copyBtn(o.orderNo, T('copyOrderNo'))}</div>
+    ${orderExpireText(o) ? `<div class="hint order-expire">${esc(orderExpireText(o))}</div>` : ''}
     <div class="pay-step"><b>${esc(T('payStep1'))}</b><div class="hint">${esc(T('payStep1Hint', { amount: yuan(o.amountCents) }))}</div>
       ${m.payQr ? `<div class="pay-imgs">${img(m.payQr, T('manualPayQr'))}</div>` : `<div class="hint">${esc(T('payPending'))}</div>`}</div>
     <div class="pay-step"><b>${esc(T('payStep2'))}</b>
@@ -3182,7 +3264,7 @@ proofInput.onchange = async () => {
   if (!r.ok) return say(r.data?.message || T('err_' + r.error), 'bad');
   const d = r.data;
   if (d.pass) say(T(d.provisional ? 'proofPassProvisional' : 'proofPass'), 'ok');
-  else say(T('proofFail', { why: (d.fails || []).join('；') }), 'bad');
+  else say(T(d.invalid ? 'proofInvalid' : 'proofFail', { why: (d.fails || []).join('；') }), 'bad');
   loadOrders();
   if (d.provisional) refreshQuota();
 };
@@ -3198,7 +3280,7 @@ async function loadOrders() {
   };
   const canPay = (o) => o.status === 'pending' && payChannels.includes('wechat') && Date.now() - new Date(String(o.createTime).replace(' ', 'T') + '+08:00').getTime() < 29 * 60000;
   $('orderList').innerHTML = r.data.orders.length
-    ? `<table class="tbl">${r.data.orders.map((o, i) => `<tr><td><span class="order-no" data-copy-no="${esc(o.orderNo)}" title="${esc(T('copyOrderNo'))}">${esc(o.orderNo)}</span></td><td>${esc(o.planName || '')}</td><td class="num">¥${yuan(o.amountCents)}</td><td>${canPay(o) ? `<button class="ghost small" data-pay="${esc(o.orderNo)}">${esc(T('payNow'))}</button>` : o.status === 'pending' && !payChannels.includes('wechat') ? `<button class="ghost small" data-manual="${i}">${esc(T('manualPayHow'))}</button>${proofTag(o)}` : esc(T('orderStatus_' + o.status))}</td><td>${esc(o.createTime || '')}</td></tr>`).join('')}</table>`
+    ? `<table class="tbl">${r.data.orders.map((o, i) => `<tr><td><span class="order-no" data-copy-no="${esc(o.orderNo)}" title="${esc(T('copyOrderNo'))}">${esc(o.orderNo)}</span></td><td>${esc(o.planName || '')}</td><td class="num">¥${yuan(o.amountCents)}</td><td>${canPay(o) ? `<button class="ghost small" data-pay="${esc(o.orderNo)}">${esc(T('payNow'))}</button>` : o.status === 'pending' && !payChannels.includes('wechat') ? `<button class="ghost small" data-manual="${i}">${esc(T('manualPayHow'))}</button>${proofTag(o)}${orderExpireText(o) ? `<div class="hint small-hint">${esc(orderExpireText(o))}</div>` : ''}` : esc(T('orderStatus_' + o.status))}</td><td>${esc(o.createTime || '')}</td></tr>`).join('')}</table>`
     : `<div class="hint">${esc(T('noOrders'))}</div>`;
   $('orderList').querySelectorAll('[data-pay]').forEach((b) => (b.onclick = () => payOrder(b.dataset.pay)));
   // 点订单号就复制（发给客服、转账备注用）
