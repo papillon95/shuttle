@@ -3087,6 +3087,7 @@ function quotaDetailHtml(q) {
   if (q.monthlyQuota) rows.push(`<div class="hint">${esc(T('quotaMonthly', { used: fmtTok(q.monthlyUsed), quota: fmtTok(q.monthlyQuota), t: q.monthlyResetTime || '-' }))}</div>`);
   if (q.extraTokens) rows.push(`<div class="hint">${esc(T('quotaExtra', { n: fmtTok(q.extraTokens) }))}</div>`);
   rows.push(`<div class="hint">${esc(T('quotaRemaining', { n: fmtTok(q.remaining) }))}</div>`);
+  if (q.freeModelDaily) rows.push(`<div class="hint">${esc(T('freeModelLeft', { n: q.freeModelLeft ?? q.freeModelDaily, total: q.freeModelDaily }))}</div>`);
   return rows.join('');
 }
 $('upgradeBtn').onclick = () => openPlans();
@@ -3095,22 +3096,28 @@ function showPlatformError(evt) {
   const d = document.createElement('div');
   d.className = 'msg error';
   d.textContent = evt.code === 'plan_required' ? T('needLevel', { level: levelName(evt.data?.requiredLevel || 1) }) : evt.text;
-  if (evt.code === 'plan_required' || evt.code === 'quota_exceeded') {
-    const b = document.createElement('button');
-    b.className = 'primary small upgrade-inline';
-    b.textContent = T('upgrade');
-    b.onclick = () => openPlans(evt.code, evt.data?.requiredLevel);
-    d.appendChild(b);
+  // 额度用完 / 免费总量满了 / 选了需要会员的模型：先给一个免费继续用的办法（切到 Shuttle 自带模型），会员只作为可选项，不主动弹窗
+  if (['quota_exceeded', 'free_busy', 'plan_required'].includes(evt.code)) {
+    const free = document.createElement('button');
+    free.className = 'primary small upgrade-inline';
+    free.textContent = T('switchFreeModel');
+    free.onclick = async () => {
+      settings = await window.api.saveSettings({ platformModel: FREE_MODEL, useOwnKey: false, chatExpert: '' });
+      renderModelSel();
+      showToast(T('switchedFreeModel'), 'ok');
+      free.disabled = true;
+    };
+    d.appendChild(free);
+    const more = document.createElement('button');
+    more.className = 'link-btn upgrade-inline';
+    more.textContent = T('seePlans');
+    more.onclick = () => openPlans(evt.code, evt.data?.requiredLevel);
+    d.appendChild(more);
   }
   append(d);
   refreshQuota();
-  // 额度用完：直接打开会员弹窗（每次启动最多自动弹一次，之后点消息里的「升级」按钮）
-  if (evt.code === 'quota_exceeded' && !quotaPromptShown && document.querySelectorAll('.modal:not(.hidden)').length === 0) {
-    quotaPromptShown = true;
-    openPlans('quota_exceeded');
-  }
 }
-let quotaPromptShown = false;
+const FREE_MODEL = 'openrouter:openrouter/free'; // Shuttle 自带模型（不扣额度）
 
 // 会员开通弹窗
 let plansCache = [];
