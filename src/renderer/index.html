@@ -584,12 +584,24 @@
   </div>
   <div class="modal hidden" id="checkinModal">
     <div class="card checkin-card">
-      <button class="close-x" id="checkinClose" type="button" aria-label="close">×</button>
-      <div class="ck-head"><div class="ck-emoji">🎁</div><h3 data-i18n="checkinTitle"></h3><p class="hint" id="checkinSub"></p></div>
-      <div class="ck-streak"><b id="checkinStreak">0</b><span data-i18n="checkinStreakUnit"></span></div>
-      <div class="ck-track" id="checkinTrack"></div>
-      <ul class="ck-rules" id="checkinRules"></ul>
-      <button class="primary ck-go" id="checkinGo" type="button"></button>
+      <div class="ck-hero">
+        <button class="ck-close" id="checkinClose" type="button" aria-label="close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        <div class="ck-title"><span class="ck-gift">🎁</span><h3 data-i18n="checkinTitle"></h3></div>
+        <p class="ck-sub" id="checkinSub"></p>
+        <div class="ck-stats">
+          <div><b id="checkinStreak">0</b><span data-i18n="checkinStreakLabel"></span></div>
+          <div><b id="checkinToday">+5 万</b><span id="checkinTodayLabel"></span></div>
+          <div><b id="checkinTotal">0</b><span data-i18n="checkinTotalLabel"></span></div>
+        </div>
+      </div>
+      <div class="ck-body">
+        <div class="ck-progress">
+          <div class="ck-bar"><i id="checkinFill"></i></div>
+          <div class="ck-miles" id="checkinMiles"></div>
+        </div>
+        <p class="ck-note" data-i18n="checkinRuleNote"></p>
+        <button class="primary ck-go" id="checkinGo" type="button"></button>
+      </div>
     </div>
   </div>
   <div class="modal hidden" id="payModal">

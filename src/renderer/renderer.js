@@ -3025,22 +3025,26 @@ function renderCheckinBtn() {
 function renderCheckinModal() {
   const c = checkin;
   if (!c) return;
+  const cycle = c.cycle || 30;
+  const marks = new Map((c.bonuses || []).map((x) => [x.day, x.tokens]));
+  // 今天签到能拿多少（今天正好是连续奖励那天就加上）
+  const todayDay = c.today ? c.streak : c.streak + 1;
+  const todayReward = c.daily + (marks.get(todayDay) || 0);
   $('checkinStreak').textContent = c.streak;
+  $('checkinToday').textContent = '+' + fmtTok(todayReward);
+  $('checkinTodayLabel').textContent = T(c.today ? 'checkinTodayGot' : 'checkinTodayCan');
+  $('checkinTotal').textContent = fmtTok(c.totalReward || 0);
   // 离下一个连续奖励还要签几次（今天还没签的话，今天这次也算）
   const next = c.nextBonusDay ? T('checkinNext', { n: Math.max(1, c.nextBonusDay - c.streak), day: c.nextBonusDay, bonus: fmtTok(c.nextBonus) }) : '';
   $('checkinSub').textContent = c.today ? T('checkinSubDone', { next }) : T('checkinSub', { daily: fmtTok(c.daily), next });
-  // 进度：1～30 天，连续奖励的那几天标出来
-  const marks = new Map((c.bonuses || []).map((x) => [x.day, x.tokens]));
-  const cells = [];
-  for (let d = 1; d <= (c.cycle || 30); d++) {
-    const on = d <= c.streak;
-    const bonus = marks.get(d);
-    cells.push(`<i class="${on ? 'on' : ''}${bonus ? ' bonus' : ''}${!c.today && d === c.streak + 1 ? ' next' : ''}" title="${esc(T('checkinDay', { d }))}">${bonus ? `<em>${esc(fmtTok(bonus))}</em>` : ''}</i>`);
-  }
-  $('checkinTrack').innerHTML = cells.join('');
-  $('checkinRules').innerHTML = [`<li>${esc(T('checkinRuleDaily', { n: fmtTok(c.daily) }))}</li>`, ...(c.bonuses || []).map((x) => `<li>${esc(T('checkinRuleBonus', { d: x.day, n: fmtTok(x.tokens) }))}</li>`), `<li class="hint">${esc(T('checkinRuleNote'))}</li>`].join('');
+  // 进度条：0～30 天，三个奖励节点
+  $('checkinFill').style.width = Math.min(100, (c.streak / cycle) * 100) + '%';
+  $('checkinMiles').innerHTML = (c.bonuses || [])
+    .map((x) => `<div class="ck-mile${c.streak >= x.day ? ' got' : ''}" style="left:${(x.day / cycle) * 100}%"><i>${c.streak >= x.day ? '✓' : ''}</i><b>+${esc(fmtTok(x.tokens))}</b><span>${esc(T('checkinDay', { d: x.day }))}</span></div>`)
+    .join('');
   $('checkinGo').disabled = !!c.today;
-  $('checkinGo').textContent = c.today ? T('checkinDone') : T('checkinGo', { n: fmtTok(c.daily + (marks.get(c.streak + 1) || 0)) });
+  $('checkinGo').classList.toggle('done', !!c.today);
+  $('checkinGo').textContent = c.today ? T('checkinDone') : T('checkinGo', { n: fmtTok(todayReward) });
 }
 $('checkinBtn').onclick = async () => {
   if (!checkin) await refreshCheckin();
