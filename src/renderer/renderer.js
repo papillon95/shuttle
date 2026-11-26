@@ -3005,7 +3005,67 @@ async function refreshQuota() {
   quota = r.data;
   renderQuota();
   renderModelSel();
+  refreshCheckin();
 }
+
+// ---------- 每日签到：每天送额度，连续 7 / 15 / 30 天额外送 ----------
+let checkin = null;
+async function refreshCheckin() {
+  const r = await window.api.call('GET', '/aidesk/checkin');
+  checkin = r.ok ? r.data : null;
+  renderCheckinBtn();
+}
+function renderCheckinBtn() {
+  const b = $('checkinBtn');
+  b.classList.toggle('hidden', !checkin || !currentUser);
+  if (!checkin) return;
+  b.classList.toggle('done', !!checkin.today);
+  $('checkinBtnText').textContent = T(checkin.today ? 'checkinDoneShort' : 'checkinBtn');
+}
+function renderCheckinModal() {
+  const c = checkin;
+  if (!c) return;
+  $('checkinStreak').textContent = c.streak;
+  // 离下一个连续奖励还要签几次（今天还没签的话，今天这次也算）
+  const next = c.nextBonusDay ? T('checkinNext', { n: Math.max(1, c.nextBonusDay - c.streak), day: c.nextBonusDay, bonus: fmtTok(c.nextBonus) }) : '';
+  $('checkinSub').textContent = c.today ? T('checkinSubDone', { next }) : T('checkinSub', { daily: fmtTok(c.daily), next });
+  // 进度：1～30 天，连续奖励的那几天标出来
+  const marks = new Map((c.bonuses || []).map((x) => [x.day, x.tokens]));
+  const cells = [];
+  for (let d = 1; d <= (c.cycle || 30); d++) {
+    const on = d <= c.streak;
+    const bonus = marks.get(d);
+    cells.push(`<i class="${on ? 'on' : ''}${bonus ? ' bonus' : ''}${!c.today && d === c.streak + 1 ? ' next' : ''}" title="${esc(T('checkinDay', { d }))}">${bonus ? `<em>${esc(fmtTok(bonus))}</em>` : ''}</i>`);
+  }
+  $('checkinTrack').innerHTML = cells.join('');
+  $('checkinRules').innerHTML = [`<li>${esc(T('checkinRuleDaily', { n: fmtTok(c.daily) }))}</li>`, ...(c.bonuses || []).map((x) => `<li>${esc(T('checkinRuleBonus', { d: x.day, n: fmtTok(x.tokens) }))}</li>`), `<li class="hint">${esc(T('checkinRuleNote'))}</li>`].join('');
+  $('checkinGo').disabled = !!c.today;
+  $('checkinGo').textContent = c.today ? T('checkinDone') : T('checkinGo', { n: fmtTok(c.daily + (marks.get(c.streak + 1) || 0)) });
+}
+$('checkinBtn').onclick = async () => {
+  if (!checkin) await refreshCheckin();
+  renderCheckinModal();
+  $('checkinModal').classList.remove('hidden');
+};
+$('checkinClose').onclick = () => $('checkinModal').classList.add('hidden');
+$('checkinModal').addEventListener('click', (e) => e.target === $('checkinModal') && $('checkinModal').classList.add('hidden'));
+$('checkinGo').onclick = async () => {
+  $('checkinGo').disabled = true;
+  const r = await window.api.call('POST', '/aidesk/checkin', {});
+  if (!r.ok && r.error !== 'already_checked_in') {
+    $('checkinGo').disabled = false;
+    return showToast(errText(r), 'error');
+  }
+  if (r.ok) {
+    showToast(r.data.bonus ? T('checkinGotBonus', { n: fmtTok(r.data.reward), d: r.data.streak, bonus: fmtTok(r.data.bonus) }) : T('checkinGot', { n: fmtTok(r.data.reward) }), 'ok');
+    if (r.data.quota) {
+      quota = r.data.quota;
+      renderQuota();
+    }
+  }
+  await refreshCheckin();
+  renderCheckinModal();
+};
 function renderQuota() {
   const chip = $('quotaChip');
   chip.classList.toggle('hidden', !quota || !currentUser);

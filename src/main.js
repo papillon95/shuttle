@@ -191,7 +191,9 @@ function effectivePlatformModel(s) {
 }
 
 function openrouterGroup(id) {
-  if (/:free$|^openrouter\/free$/.test(id)) return { key: 'or-free', name: '免费模型', nameEn: 'Free models' };
+  // 自动挑选空闲免费模型的那个：作为「Shuttle 自带模型」单独一组，排在最前面
+  if (id === 'openrouter/free') return { key: 'shuttle', name: 'Shuttle', nameEn: 'Shuttle' };
+  if (/:free$/.test(id)) return { key: 'or-free', name: '免费模型', nameEn: 'Free models' };
   if (id.startsWith('anthropic/')) return { key: 'or-claude', name: 'Claude', nameEn: 'Claude' };
   if (id.startsWith('openai/')) return { key: 'or-openai', name: 'ChatGPT', nameEn: 'ChatGPT' };
   if (id.startsWith('google/')) return { key: 'or-gemini', name: 'Gemini', nameEn: 'Gemini' };
@@ -210,7 +212,8 @@ function platformModels() {
         minPlanLevel: m.minPlanLevel || 0, multiplier: m.multiplier ?? 1, supportsVision: !!m.supportsVision, contextWindow: m.contextWindow || 0 });
     }
   }
-  return out;
+  // Shuttle 自带模型排最前
+  return [...out.filter((m) => m.group === 'shuttle'), ...out.filter((m) => m.group !== 'shuttle')];
 }
 let catalogTimer = null;
 async function refreshCatalog() {
@@ -4704,7 +4707,7 @@ function reportUsage(settings, usage, status, latencyMs, errorCode) {
 ipcMain.handle('api:call', async (_e, method, pathname, body) => {
   // 拒绝 .. 和编码过的点：不然 /aidesk/account/../../system/... 规范化后能访问后端别的接口
   if (/(^|\/)\.\.(\/|$)|%2e|%2f|\\/i.test(String(pathname))) return { ok: false, error: 'forbidden' };
-  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|mcp-tokens|support|team|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
+  if (!/^\/aidesk\/(account|usage|feedback|announcements|app|settings|catalog|billing|pay|asr|mcp-tokens|support|team|checkin|auth\/me)(\/|\?|$)/.test(pathname)) return { ok: false, error: 'forbidden' };
   // 语音识别最长 60 秒音频，腾讯云返回较慢，放宽超时
   // 上传付款截图要等 AI 看图核对，也放宽
   const timeout = pathname === '/aidesk/asr' ? 30000 : pathname === '/aidesk/support/proof' ? 90000 : undefined;

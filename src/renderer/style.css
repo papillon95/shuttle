@@ -1290,3 +1290,29 @@ body.busy .plan-card:not(.idle) li.in_progress i { animation: plan-spin .8s line
 .plan-card.idle li.in_progress i, body:not(.busy) .plan-card li.in_progress i { border-right-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .plan-card.all-done .plan-count { color: var(--accent); }
 @keyframes plan-spin { to { transform: rotate(360deg); } }
+
+/* ---------- 每日签到 ---------- */
+.quota-chip .q-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.checkin-btn { border: none; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+.checkin-btn .dot { width: 6px; height: 6px; border-radius: 50%; background: #ff5b4f; }
+.checkin-btn.done { background: transparent; color: inherit; opacity: .7; font-weight: 500; }
+.checkin-btn.done .dot { display: none; }
+.checkin-btn:hover { filter: brightness(1.1); }
+.checkin-card { width: 440px; position: relative; text-align: center; }
+.checkin-card .close-x { position: absolute; right: 12px; top: 10px; border: none; background: none; font-size: 22px; color: var(--muted); cursor: pointer; width: 32px; height: 32px; border-radius: 50%; }
+.checkin-card .close-x:hover { background: var(--hover); }
+.ck-emoji { font-size: 34px; }
+.ck-head h3 { margin: 4px 0 2px; }
+.ck-streak { margin: 14px 0 10px; }
+.ck-streak b { font-size: 40px; font-weight: 700; color: var(--accent); margin-right: 4px; font-variant-numeric: tabular-nums; }
+.ck-streak span { color: var(--muted); }
+.ck-track { display: grid; grid-template-columns: repeat(10, 1fr); gap: 18px 6px; margin: 20px 0 14px; }
+.ck-track i { position: relative; height: 22px; border-radius: 6px; background: var(--side); border: 1px solid var(--border); }
+.ck-track i.on { background: var(--accent); border-color: var(--accent); }
+.ck-track i.next { border: 1.5px dashed var(--accent); }
+.ck-track i.bonus { background: color-mix(in srgb, #f5a524 22%, var(--side)); border-color: #f5a524; }
+.ck-track i.bonus.on { background: #f5a524; }
+.ck-track i em { position: absolute; left: 50%; top: -15px; transform: translateX(-50%); font-style: normal; font-size: 10px; color: #c27c0e; white-space: nowrap; font-weight: 600; }
+.ck-rules { list-style: none; margin: 4px 0 16px; padding: 10px 14px; background: var(--side); border-radius: 10px; text-align: left; font-size: 13px; line-height: 1.8; }
+.ck-go { width: 100%; height: 42px; font-size: 15px; }
+.ck-go:disabled { opacity: .55; }
