@@ -3447,7 +3447,7 @@ function showPlatformError(evt) {
   append(d);
   refreshQuota();
 }
-const FREE_MODEL = 'openrouter:openrouter/free'; // Shuttle 自带模型（不扣额度）
+const FREE_MODEL = 'openrouter:anthropic/claude-haiku-5.5'; // Claude Haiku（免费，不扣额度）
 
 // 会员开通弹窗
 let plansCache = [];

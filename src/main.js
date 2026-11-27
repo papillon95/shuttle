@@ -21,6 +21,7 @@ const scheduler = require('./scheduler');
 const memory = require('./memory');
 const quickask = require('./quickask');
 const screenshot = require('./screenshot');
+const { allowKey, commandAllowed } = require('./allow');
 const { t } = require('./i18n');
 
 // 当前界面语言；主进程发给界面的文字、工具结果、系统提示都跟着它走
@@ -1993,32 +1994,7 @@ async function scheduleTool(args) {
 
 // 纯聊天对话不给的工具：读写文件、执行命令（附件仍可用 read_file 按完整路径读）
 const FOLDER_ONLY_TOOLS = new Set(['list_dir', 'search', 'find_files', 'edit_file', 'write_file', 'run_command', 'command_output', 'command_stop', 'explore']);
-// 「以后都允许」：按命令开头（前一两个词）记住；带管道、重定向、多条命令的，和删除、提权、联网下载这类不提供
-const SHELL_OPS = /[;&|<>`$\n\r]/;
-const RISKY_CMDS = new Set(['rm', 'rmdir', 'del', 'erase', 'rd', 'sudo', 'su', 'doas', 'dd', 'mkfs', 'shutdown', 'reboot', 'halt', 'chmod', 'chown', 'kill', 'pkill', 'killall', 'taskkill', 'format', 'curl', 'wget', 'ssh', 'scp', 'rsync', 'mv', 'move', 'powershell', 'pwsh', 'bash', 'sh', 'zsh', 'cmd', 'eval', 'xargs', 'find']);
-function allowKey(command) {
-  const c = String(command || '').trim();
-  if (!c || SHELL_OPS.test(c)) return '';
-  const t = c.split(/\s+/);
-  if (RISKY_CMDS.has(t[0].toLowerCase())) return '';
-  // 解释器带参数（node -e、python -c）等于能执行任意代码，不提供
-  if (/^(node|python3?|py|ruby|perl|php|deno|bun|lua|java)$/i.test(t[0]) && (!t[1] || t[1].startsWith('-'))) return '';
-  let key = t[0];
-  // 第二个词不是选项就带上（脚本名、子命令）；npm run xxx 这类再带上脚本名
-  if (t[1] && !t[1].startsWith('-')) key += ' ' + t[1];
-  if (/^(npm|pnpm|yarn|bun|npx|uv|poetry|cargo|go|dotnet|mvn|gradle)$/i.test(t[0]) && /^(run|exec|x|run-script)$/.test(t[1] || '') && t[2] && !t[2].startsWith('-')) key += ' ' + t[2];
-  if (/^git (push|reset|clean|checkout|rebase|rm)$|^npm (publish|unpublish)$/.test(key)) return '';
-  return key;
-}
-function commandAllowed(command, list) {
-  const c = String(command || '').trim();
-  if (!c || !list?.length || SHELL_OPS.test(c)) return false;
-  const t = c.split(/\s+/);
-  return list.some((k) => {
-    const kt = String(k).trim().split(/\s+/);
-    return kt.length && kt.every((x, i) => t[i] === x);
-  });
-}
+// 「以后都允许」的命令白名单在 allow.js
 function toolDefinitions(settings, c) {
   const all = toolDefinitionsAll(settings);
   if (c?.planMode) return all.filter((t) => PLAN_MODE_TOOLS.has(t.function?.name || t.name));
