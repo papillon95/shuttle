@@ -3288,6 +3288,7 @@ const levelName = (l) => T('level' + l);
 const fmtTok = (n) => {
   n = Number(n || 0);
   if (lang() === 'en') return n >= 1e6 ? (n / 1e6).toFixed(n % 1e6 ? 1 : 0) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : String(n);
+  if (n >= 1e8) return (n / 1e8).toFixed(n % 1e8 ? 1 : 0).replace(/\.0$/, '') + ' 亿';
   return n >= 1e4 ? (n / 1e4).toFixed(n % 1e4 ? 1 : 0).replace(/\.0$/, '') + ' 万' : String(n);
 };
 const yuan = (cents) => (cents / 100).toFixed(cents % 100 ? 2 : 0);
@@ -3492,6 +3493,14 @@ async function openPlans(reason, requiredLevel) {
   renderPlans();
   loadOrders();
 }
+// 会员说明里的重点上色：额度数字、能用的模型、优惠（说明是纯文字，显示时按规则高亮；分号分成几行）
+function hlPlanText(s) {
+  let h = esc(s || '');
+  h = h.replace(/(\d[\d.,]*\s*(?:万|亿)\s*(?:tokens?)?|约\s*\d+\s*个(?:国产模型|干活)?任务|（?Opus\s*约\s*\d+\s*个）?|每天(?:合计)?\s*\d+\s*次|\d[\d,.]*[KM] tokens|~\d+ tasks)/g, '<b class="hl-num">$1</b>');
+  h = h.replace(/(全部模型|Claude (?:Opus|Sonnet|Haiku)(?: \d[\d.]*)?|Fable(?: \d[\d.]*)?|GPT-6(?:\.2)? (?:Astra|Sol|Luna)|Gemini 4|Gemini Flash Lite|DeepSeek|Grok|All models)/g, '<span class="hl-model">$1</span>');
+  h = h.replace(/(首次开通首月\s*9\.9\s*元|首月\s*[¥￥]?\d+(?:\.\d+)?\s*元?|年付省\s*\d+\s*个月|永不过期|不扣额度|免费用|never expire|2 months free)/gi, '<span class="hl-deal">$1</span>');
+  return h.split(/[；;]\s*/).filter(Boolean).map((x) => `<div class="pd-line">${x}</div>`).join('');
+}
 function renderPlans() {
   document.querySelectorAll('.period-switch button').forEach((b) => b.classList.toggle('active', b.dataset.period === planPeriod));
   const card = (p) => {
@@ -3506,7 +3515,7 @@ function renderPlans() {
       ${plansPromo && plansPromo.planCode === p.code
         ? `<div class="pp">¥${yuan(plansPromo.priceCents)}<small>${esc(T('firstMonth'))}</small> <s class="pp-old">¥${yuan(p.priceCents)}</s></div><div class="pp-note">${esc(T('firstMonthNote', { price: yuan(p.priceCents) }))}</div>`
         : `<div class="pp">¥${yuan(p.priceCents)}<small>${esc(per)}</small></div>`}
-      <div class="pd">${esc(quotaText)}<br>${p.kind === 'pack' ? '' : esc(T('devicesN', { n: p.maxDevices })) + '<br>'}${esc((lang() === 'en' && p.descriptionEn) || p.description || '')}</div>
+      <div class="pd"><div class="pd-quota">${hlPlanText(quotaText)}</div>${p.kind === 'pack' ? '' : `<div class="pd-dev">${esc(T('devicesN', { n: p.maxDevices }))}</div>`}${hlPlanText((lang() === 'en' && p.descriptionEn) || p.description || '')}</div>
       ${btn}</div>`;
   };
   const subs = plansCache.filter((p) => p.kind !== 'pack' && (p.level === 0 || p.period === planPeriod));
